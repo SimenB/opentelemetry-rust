@@ -1,6 +1,6 @@
 //! Implements the [`SDK`] component of [OpenTelemetry].
 //!
-//! *Compiler support: [requires `rustc` 1.64+][msrv]*
+//! *[Supported Rust Versions](#supported-rust-versions)*
 //!
 //! [`SDK`]: https://opentelemetry.io/docs/specs/otel/overview/#sdk
 //! [OpenTelemetry]: https://opentelemetry.io/docs/what-is-opentelemetry/
@@ -30,7 +30,7 @@
 //!     });
 //!
 //!     // Shutdown trace pipeline
-//!     global::shutdown_tracer_provider();
+//!     provider.shutdown().expect("TracerProvider should shutdown successfully")
 //!     # }
 //! }
 //! # }
@@ -44,7 +44,7 @@
 //! [examples]: https://github.com/open-telemetry/opentelemetry-rust/tree/main/examples
 //! [`trace`]: https://docs.rs/opentelemetry/latest/opentelemetry/trace/index.html
 //!
-//! # Metrics (Beta)
+//! # Metrics (Alpha)
 //!
 //! Note: the metrics implementation is **still in progress** and **subject to major
 //! changes**.
@@ -60,7 +60,7 @@
 //! let meter = global::meter("my_service");
 //!
 //! // create an instrument
-//! let counter = meter.u64_counter("my_counter").init();
+//! let counter = meter.u64_counter("my_counter").build();
 //!
 //! // record a measurement
 //! counter.add(1, &[KeyValue::new("http.client_ip", "83.164.160.102")]);
@@ -89,10 +89,10 @@
 //!
 //! For `logs` the following feature flags are available:
 //!
-//! * `logs_level_enabled`: control the log level
+//! * `spec_unstable_logs_enabled`: control the log level
 //!
-//! Support for recording and exporting telemetry asynchronously can be added
-//! via the following flags:
+//! Support for recording and exporting telemetry asynchronously and perform
+//! metrics aggregation can be added via the following flags:
 //!
 //! * `rt-tokio`: Spawn telemetry tasks using [tokio]'s multi-thread runtime.
 //! * `rt-tokio-current-thread`: Spawn telemetry tasks on a separate runtime so that the main runtime won't be blocked.
@@ -120,9 +120,9 @@
 )]
 #![cfg_attr(test, deny(warnings))]
 
-pub(crate) mod attributes;
 pub mod export;
-mod instrumentation;
+pub(crate) mod growable_array;
+
 #[cfg(feature = "logs")]
 #[cfg_attr(docsrs, doc(cfg(feature = "logs")))]
 pub mod logs;
@@ -137,6 +137,8 @@ pub mod runtime;
 #[cfg(any(feature = "testing", test))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "testing", test))))]
 pub mod testing;
+
+#[allow(deprecated)]
 #[cfg(feature = "trace")]
 #[cfg_attr(docsrs, doc(cfg(feature = "trace")))]
 pub mod trace;
@@ -144,7 +146,7 @@ pub mod trace;
 #[doc(hidden)]
 pub mod util;
 
-pub use attributes::*;
-pub use instrumentation::{InstrumentationLibrary, Scope};
 #[doc(inline)]
 pub use resource::Resource;
+
+pub mod error;

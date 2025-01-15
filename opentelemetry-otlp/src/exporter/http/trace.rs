@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures_core::future::BoxFuture;
 use http::{header::CONTENT_TYPE, Method};
-use opentelemetry::trace::{TraceError, TraceResult};
+use opentelemetry::{otel_debug, trace::TraceError};
 use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
 
 use super::OtlpHttpClient;
@@ -21,7 +21,7 @@ impl SpanExporter for OtlpHttpClient {
             Err(err) => return Box::pin(std::future::ready(Err(err))),
         };
 
-        let (body, content_type) = match build_body(batch) {
+        let (body, content_type) = match self.build_trace_export_body(batch) {
             Ok(body) => body,
             Err(e) => return Box::pin(std::future::ready(Err(e))),
         };
@@ -47,6 +47,7 @@ impl SpanExporter for OtlpHttpClient {
 
         Box::pin(async move {
             let request_uri = request.uri().to_string();
+            otel_debug!(name: "HttpTracesClient.CallingExport");
             let response = client.send(request).await?;
 
             if !response.status().is_success() {
@@ -66,25 +67,8 @@ impl SpanExporter for OtlpHttpClient {
     fn shutdown(&mut self) {
         let _ = self.client.lock().map(|mut c| c.take());
     }
-}
 
-#[cfg(feature = "http-proto")]
-fn build_body(spans: Vec<SpanData>) -> TraceResult<(Vec<u8>, &'static str)> {
-    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-    use prost::Message;
-
-    let req = ExportTraceServiceRequest {
-        resource_spans: spans.into_iter().map(Into::into).collect(),
-    };
-    let mut buf = vec![];
-    req.encode(&mut buf).map_err(crate::Error::from)?;
-
-    Ok((buf, "application/x-protobuf"))
-}
-
-#[cfg(not(feature = "http-proto"))]
-fn build_body(spans: Vec<SpanData>) -> TraceResult<(Vec<u8>, &'static str)> {
-    Err(TraceError::Other(
-        "No http protocol configured. Enable one via `http-proto`".into(),
-    ))
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.resource = resource.into();
+    }
 }

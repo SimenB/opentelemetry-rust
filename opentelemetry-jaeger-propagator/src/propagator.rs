@@ -1,7 +1,7 @@
 use opentelemetry::{
-    global::{self, Error},
+    otel_warn,
     propagation::{text_map_propagator::FieldIter, Extractor, Injector, TextMapPropagator},
-    trace::{SpanContext, SpanId, TraceContextExt, TraceError, TraceFlags, TraceId, TraceState},
+    trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
     Context,
 };
 use std::borrow::Cow;
@@ -14,6 +14,9 @@ const DEPRECATED_PARENT_SPAN: &str = "0";
 const TRACE_FLAG_DEBUG: TraceFlags = TraceFlags::new(0x04);
 
 /// `Propagator` implements the [Jaeger propagation format].
+/// See [module level documentation](self#Examples) for examples.
+///  
+/// [jaeger propagation format]: https://www.jaegertracing.io/docs/1.18/client-libraries/#propagation-format
 #[derive(Clone, Debug)]
 pub struct Propagator {
     baggage_prefix: &'static str,
@@ -69,7 +72,7 @@ impl Propagator {
     }
 
     /// Extract span context from header value
-    fn extract_span_context(&self, extractor: &dyn Extractor) -> Result<SpanContext, ()> {
+    fn extract_span_context(&self, extractor: &dyn Extractor) -> Option<SpanContext> {
         let mut header_value = Cow::from(extractor.get(self.header_name).unwrap_or(""));
         // if there is no :, it means header_value could be encoded as url, try decode first
         if !header_value.contains(':') {
@@ -78,17 +81,33 @@ impl Propagator {
 
         let parts = header_value.split_terminator(':').collect::<Vec<&str>>();
         if parts.len() != 4 {
-            return Err(());
+            otel_warn!(
+                name: "JaegerPropagator.InvalidHeader",
+                message = "Invalid jaeger header format",
+                header_value = header_value.to_string(),
+            );
+            return None;
         }
 
-        // extract trace id
-        let trace_id = self.extract_trace_id(parts[0])?;
-        let span_id = self.extract_span_id(parts[1])?;
-        // Ignore parent span id since it's deprecated.
-        let flags = self.extract_trace_flags(parts[3])?;
-        let state = self.extract_trace_state(extractor)?;
-
-        Ok(SpanContext::new(trace_id, span_id, flags, true, state))
+        match (
+            self.extract_trace_id(parts[0]),
+            self.extract_span_id(parts[1]),
+            // Ignore parent span id since it's deprecated.
+            self.extract_trace_flags(parts[3]),
+            self.extract_trace_state(extractor),
+        ) {
+            (Ok(trace_id), Ok(span_id), Ok(flags), Ok(state)) => {
+                Some(SpanContext::new(trace_id, span_id, flags, true, state))
+            }
+            _ => {
+                otel_warn!(
+                    name: "JaegerPropagator.InvalidHeader",
+                    message = "Invalid jaeger header format",
+                    header_value = header_value.to_string(),
+                );
+                None
+            }
+        }
     }
 
     /// Extract trace id from the header.
@@ -120,7 +139,7 @@ impl Propagator {
     /// First bit controls whether to sample
     /// Second bit controls whether it's a debug trace
     /// Third bit is not used.
-    /// Forth bit is firehose flag, which is not supported in OT now.
+    /// Fourth bit is firehose flag, which is not supported in OT now.
     fn extract_trace_flags(&self, flag: &str) -> Result<TraceFlags, ()> {
         if flag.len() > 2 {
             return Err(());
@@ -153,7 +172,11 @@ impl Propagator {
         match TraceState::from_key_value(baggage_keys) {
             Ok(trace_state) => Ok(trace_state),
             Err(trace_state_err) => {
-                global::handle_error(Error::Trace(TraceError::Other(Box::new(trace_state_err))));
+                otel_warn!(
+                    name: "JaegerPropagator.InvalidTraceState",
+                    message = "Invalid trace state",
+                    reason = format!("{:?}", trace_state_err),
+                );
                 Err(()) //todo: assign an error type instead of using ()
             }
         }
@@ -188,7 +211,7 @@ impl TextMapPropagator for Propagator {
     fn extract_with_context(&self, cx: &Context, extractor: &dyn Extractor) -> Context {
         self.extract_span_context(extractor)
             .map(|sc| cx.with_remote_span_context(sc))
-            .unwrap_or_else(|_| cx.clone())
+            .unwrap_or_else(|| cx.clone())
     }
 
     fn fields(&self) -> FieldIter<'_> {
@@ -199,12 +222,7 @@ impl TextMapPropagator for Propagator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::{
-        propagation::{Injector, TextMapPropagator},
-        testing::trace::TestSpan,
-        trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
-        Context,
-    };
+    use opentelemetry::testing::trace::TestSpan;
     use std::collections::HashMap;
 
     const LONG_TRACE_ID_STR: &str = "000000000000004d0000000000000016";
@@ -430,7 +448,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Ok(SpanContext::new(
+            Some(SpanContext::new(
                 TraceId::from_hex("12345").unwrap(),
                 SpanId::from_hex("54321").unwrap(),
                 TRACE_FLAG_DEBUG | TraceFlags::SAMPLED,
@@ -447,7 +465,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Ok(SpanContext::new(
+            Some(SpanContext::new(
                 TraceId::from_hex("12345").unwrap(),
                 SpanId::from_hex("54321").unwrap(),
                 TRACE_FLAG_DEBUG | TraceFlags::SAMPLED,
@@ -463,7 +481,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Err(())
+            None,
         );
 
         map.clear();
@@ -473,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Err(())
+            None,
         );
 
         map.clear();
@@ -483,7 +501,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Err(())
+            None,
         );
 
         map.clear();
@@ -493,7 +511,7 @@ mod tests {
         );
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Err(())
+            None,
         );
 
         map.clear();
@@ -506,7 +524,7 @@ mod tests {
         map.set(&too_long_baggage_key, "baggage_value".to_owned());
         assert_eq!(
             propagator_with_custom_header.extract_span_context(&map),
-            Err(())
+            None,
         );
     }
 

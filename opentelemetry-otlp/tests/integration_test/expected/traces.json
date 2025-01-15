@@ -21,10 +21,11 @@
               "traceId": "9b458af7378cba65253d7042d34fc72e",
               "spanId": "cd7cf7bf939930b7",
               "parentSpanId": "d58cf2d702a061e0",
+              "flags": 1,
               "name": "Sub operation...",
               "kind": 1,
-              "startTimeUnixNano": 1703985537070566698,
-              "endTimeUnixNano": 1703985537070572718,
+              "startTimeUnixNano": "1703985537070566698",
+              "endTimeUnixNano": "1703985537070572718",
               "attributes": [
                 {
                   "key": "lemons",
@@ -35,41 +36,21 @@
               ],
               "events": [
                 {
-                  "timeUnixNano": 1703985537070567697,
+                  "timeUnixNano": "1703985537070567697",
                   "name": "Sub span event"
                 }
               ],
               "status": {}
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "resource": {
-        "attributes": [
-          {
-            "key": "service.name",
-            "value": {
-              "stringValue": "basic-otlp-tracing-example"
-            }
-          }
-        ]
-      },
-      "scopeSpans": [
-        {
-          "scope": {
-            "name": "ex.com/basic"
-          },
-          "spans": [
+            },
             {
               "traceId": "9b458af7378cba65253d7042d34fc72e",
               "spanId": "d58cf2d702a061e0",
               "parentSpanId": "",
+              "flags": 1,
               "name": "operation",
               "kind": 1,
-              "startTimeUnixNano": 1703985537070558635,
-              "endTimeUnixNano": 1703985537070580454,
+              "startTimeUnixNano": "1703985537070558635",
+              "endTimeUnixNano": "1703985537070580454",
               "attributes": [
                 {
                   "key": "ex.com/another",
@@ -80,13 +61,13 @@
               ],
               "events": [
                 {
-                  "timeUnixNano": 1703985537070563326,
+                  "timeUnixNano": "1703985537070563326",
                   "name": "Nice operation!",
                   "attributes": [
                     {
                       "key": "bogons",
                       "value": {
-                        "intValue": 100
+                        "intValue": "100"
                       }
                     }
                   ]

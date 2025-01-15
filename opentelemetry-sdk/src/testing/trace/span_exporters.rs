@@ -1,22 +1,16 @@
 use crate::{
-    export::{
-        trace::{ExportResult, SpanData, SpanExporter},
-        ExportError,
-    },
-    trace::{Config, SpanEvents, SpanLinks},
-    InstrumentationLibrary,
+    export::trace::{ExportResult, SpanData, SpanExporter},
+    trace::{SpanEvents, SpanLinks},
 };
-use async_trait::async_trait;
-use crossbeam_channel::{unbounded, Receiver, SendError, Sender};
 use futures_util::future::BoxFuture;
 pub use opentelemetry::testing::trace::TestSpan;
-use opentelemetry::trace::{
-    SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
+use opentelemetry::{
+    trace::{SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState},
+    InstrumentationScope,
 };
 use std::fmt::{Display, Formatter};
 
 pub fn new_test_export_span_data() -> SpanData {
-    let config = Config::default();
     SpanData {
         span_context: SpanContext::new(
             TraceId::from_u128(1),
@@ -35,45 +29,8 @@ pub fn new_test_export_span_data() -> SpanData {
         events: SpanEvents::default(),
         links: SpanLinks::default(),
         status: Status::Unset,
-        resource: config.resource,
-        instrumentation_lib: InstrumentationLibrary::default(),
+        instrumentation_scope: InstrumentationScope::default(),
     }
-}
-
-#[derive(Debug)]
-pub struct TestSpanExporter {
-    tx_export: Sender<SpanData>,
-    tx_shutdown: Sender<()>,
-}
-
-#[async_trait]
-impl SpanExporter for TestSpanExporter {
-    fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
-        for span_data in batch {
-            if let Err(err) = self
-                .tx_export
-                .send(span_data)
-                .map_err::<TestExportError, _>(Into::into)
-            {
-                return Box::pin(std::future::ready(Err(Into::into(err))));
-            }
-        }
-        Box::pin(std::future::ready(Ok(())))
-    }
-
-    fn shutdown(&mut self) {
-        let _ = self.tx_shutdown.send(()); // ignore error
-    }
-}
-
-pub fn new_test_exporter() -> (TestSpanExporter, Receiver<SpanData>, Receiver<()>) {
-    let (tx_export, rx_export) = unbounded();
-    let (tx_shutdown, rx_shutdown) = unbounded();
-    let exporter = TestSpanExporter {
-        tx_export,
-        tx_shutdown,
-    };
-    (exporter, rx_export, rx_shutdown)
 }
 
 #[derive(Debug)]
@@ -120,7 +77,7 @@ pub struct TestExportError(String);
 
 impl std::error::Error for TestExportError {}
 
-impl ExportError for TestExportError {
+impl opentelemetry::trace::ExportError for TestExportError {
     fn exporter_name(&self) -> &'static str {
         "test"
     }
@@ -135,12 +92,6 @@ impl Display for TestExportError {
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for TestExportError {
     fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
-        TestExportError(err.to_string())
-    }
-}
-
-impl<T> From<crossbeam_channel::SendError<T>> for TestExportError {
-    fn from(err: SendError<T>) -> Self {
         TestExportError(err.to_string())
     }
 }

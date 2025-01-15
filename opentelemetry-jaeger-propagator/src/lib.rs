@@ -1,10 +1,9 @@
-//! *Compiler support: [requires `rustc` 1.64+][msrv]*
+//! *[Supported Rust Versions](#supported-rust-versions)*
 //!
 //! [Jaeger Docs]: https://www.jaegertracing.io/docs/
 //! [jaeger-deprecation]: https://github.com/open-telemetry/opentelemetry-specification/pull/2858/files
 //! [jaeger-otlp]: https://www.jaegertracing.io/docs/1.38/apis/#opentelemetry-protocol-stable
 //! [otlp-exporter]: https://docs.rs/opentelemetry-otlp/latest/opentelemetry_otlp/
-//! [msrv]: #supported-rust-versions
 //! [jaeger propagation format]: https://www.jaegertracing.io/docs/1.18/client-libraries/#propagation-format
 //!
 //! # Supported Rust Versions
@@ -88,8 +87,5 @@
 ///
 ///  [jaeger propagation format]: https://www.jaegertracing.io/docs/1.18/client-libraries/#propagation-format
 pub mod propagator;
-#[cfg(feature = "integration_test")]
-#[doc(hidden)]
-pub mod testing;
 
 pub use propagator::Propagator;

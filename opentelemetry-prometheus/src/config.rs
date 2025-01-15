@@ -1,13 +1,9 @@
 use core::fmt;
 use once_cell::sync::OnceCell;
-use opentelemetry::metrics::{MetricsError, Result};
-use opentelemetry_sdk::metrics::{
-    reader::{AggregationSelector, MetricProducer},
-    ManualReaderBuilder,
-};
+use opentelemetry_sdk::metrics::{ManualReaderBuilder, MetricError, MetricResult};
 use std::sync::{Arc, Mutex};
 
-use crate::{Collector, PrometheusExporter};
+use crate::{Collector, PrometheusExporter, ResourceSelector};
 
 /// [PrometheusExporter] configuration options
 #[derive(Default)]
@@ -19,6 +15,7 @@ pub struct ExporterBuilder {
     namespace: Option<String>,
     disable_scope_info: bool,
     reader: ManualReaderBuilder,
+    resource_selector: ResourceSelector,
 }
 
 impl fmt::Debug for ExporterBuilder {
@@ -104,27 +101,21 @@ impl ExporterBuilder {
         self
     }
 
-    /// Configure the [AggregationSelector] the exporter will use.
+    /// Configures whether to export resource as attributes with every metric.
     ///
-    /// If no selector is provided, the [DefaultAggregationSelector] is used.
+    /// Note that this is orthogonal to the `target_info` metric, which can be disabled using `without_target_info`.
     ///
-    /// [DefaultAggregationSelector]: opentelemetry_sdk::metrics::reader::DefaultAggregationSelector
-    pub fn with_aggregation_selector(mut self, agg: impl AggregationSelector + 'static) -> Self {
-        self.reader = self.reader.with_aggregation_selector(agg);
-        self
-    }
-
-    /// Registers an external [MetricProducer] with this reader.
-    ///
-    /// The producer is used as a source of aggregated metric data which is
-    /// incorporated into metrics collected from the SDK.
-    pub fn with_producer(mut self, producer: impl MetricProducer + 'static) -> Self {
-        self.reader = self.reader.with_producer(producer);
+    /// If you called `without_target_info` and `with_resource_selector` with `ResourceSelector::None`, resource will not be exported at all.
+    pub fn with_resource_selector(
+        mut self,
+        resource_selector: impl Into<ResourceSelector>,
+    ) -> Self {
+        self.resource_selector = resource_selector.into();
         self
     }
 
     /// Creates a new [PrometheusExporter] from this configuration.
-    pub fn build(self) -> Result<PrometheusExporter> {
+    pub fn build(self) -> MetricResult<PrometheusExporter> {
         let reader = Arc::new(self.reader.build());
 
         let collector = Collector {
@@ -136,12 +127,14 @@ impl ExporterBuilder {
             create_target_info_once: OnceCell::new(),
             namespace: self.namespace,
             inner: Mutex::new(Default::default()),
+            resource_selector: self.resource_selector,
+            resource_labels_once: OnceCell::new(),
         };
 
         let registry = self.registry.unwrap_or_default();
         registry
             .register(Box::new(collector))
-            .map_err(|e| MetricsError::Other(e.to_string()))?;
+            .map_err(|e| MetricError::Other(e.to_string()))?;
 
         Ok(PrometheusExporter { reader })
     }

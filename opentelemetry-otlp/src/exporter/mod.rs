@@ -2,7 +2,7 @@
 //!
 //! OTLP supports sending data via different protocols and formats.
 
-#[cfg(feature = "http-proto")]
+#[cfg(any(feature = "http-proto", feature = "http-json"))]
 use crate::exporter::http::HttpExporterBuilder;
 #[cfg(feature = "grpc-tonic")]
 use crate::exporter::tonic::TonicExporterBuilder;
@@ -28,18 +28,26 @@ pub const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 /// Compression algorithm to use, defaults to none.
 pub const OTEL_EXPORTER_OTLP_COMPRESSION: &str = "OTEL_EXPORTER_OTLP_COMPRESSION";
 
-#[cfg(feature = "http-proto")]
+#[cfg(feature = "http-json")]
+/// Default protocol, using http-json.
+pub const OTEL_EXPORTER_OTLP_PROTOCOL_DEFAULT: &str = OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_JSON;
+#[cfg(all(feature = "http-proto", not(feature = "http-json")))]
 /// Default protocol, using http-proto.
 pub const OTEL_EXPORTER_OTLP_PROTOCOL_DEFAULT: &str = OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_PROTOBUF;
-#[cfg(all(feature = "grpc-tonic", not(feature = "http-proto")))]
-/// Default protocol, using grpc as http-proto feature is not enabled.
+#[cfg(all(
+    feature = "grpc-tonic",
+    not(any(feature = "http-proto", feature = "http-json"))
+))]
+/// Default protocol, using grpc
 pub const OTEL_EXPORTER_OTLP_PROTOCOL_DEFAULT: &str = OTEL_EXPORTER_OTLP_PROTOCOL_GRPC;
-#[cfg(not(any(any(feature = "grpc-tonic", feature = "http-proto"))))]
+
+#[cfg(not(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json")))]
 /// Default protocol if no features are enabled.
 pub const OTEL_EXPORTER_OTLP_PROTOCOL_DEFAULT: &str = "";
 
 const OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_PROTOBUF: &str = "http/protobuf";
 const OTEL_EXPORTER_OTLP_PROTOCOL_GRPC: &str = "grpc";
+const OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_JSON: &str = "http/json";
 
 /// Max waiting time for the backend to process each signal batch, defaults to 10 seconds.
 pub const OTEL_EXPORTER_OTLP_TIMEOUT: &str = "OTEL_EXPORTER_OTLP_TIMEOUT";
@@ -47,10 +55,11 @@ pub const OTEL_EXPORTER_OTLP_TIMEOUT: &str = "OTEL_EXPORTER_OTLP_TIMEOUT";
 pub const OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT: u64 = 10;
 
 // Endpoints per protocol https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/exporter.md
+#[cfg(feature = "grpc-tonic")]
 const OTEL_EXPORTER_OTLP_GRPC_ENDPOINT_DEFAULT: &str = "http://localhost:4317";
 const OTEL_EXPORTER_OTLP_HTTP_ENDPOINT_DEFAULT: &str = "http://localhost:4318";
 
-#[cfg(feature = "http-proto")]
+#[cfg(any(feature = "http-proto", feature = "http-json"))]
 pub(crate) mod http;
 #[cfg(feature = "grpc-tonic")]
 pub(crate) mod tonic;
@@ -58,8 +67,9 @@ pub(crate) mod tonic;
 /// Configuration for the OTLP exporter.
 #[derive(Debug)]
 pub struct ExportConfig {
-    /// The base address of the OTLP collector. If not set, the default address is used.
-    pub endpoint: String,
+    /// The address of the OTLP collector. If it's not provided via builder or environment variables.
+    /// Default address will be used based on the protocol.
+    pub endpoint: Option<String>,
 
     /// The protocol to use when communicating with the collector.
     pub protocol: Protocol,
@@ -73,7 +83,9 @@ impl Default for ExportConfig {
         let protocol = default_protocol();
 
         ExportConfig {
-            endpoint: default_endpoint(protocol),
+            endpoint: None,
+            // don't use default_endpoint(protocol) here otherwise we
+            // won't know if user provided a value
             protocol,
             timeout: Duration::from_secs(OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT),
         }
@@ -86,12 +98,15 @@ impl Default for ExportConfig {
 pub enum Compression {
     /// Compresses data using gzip.
     Gzip,
+    /// Compresses data using zstd.
+    Zstd,
 }
 
 impl Display for Compression {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Compression::Gzip => write!(f, "gzip"),
+            Compression::Zstd => write!(f, "zstd"),
         }
     }
 }
@@ -102,6 +117,7 @@ impl FromStr for Compression {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "gzip" => Ok(Compression::Gzip),
+            "zstd" => Ok(Compression::Zstd),
             _ => Err(Error::UnsupportedCompressionAlgorithm(s.to_string())),
         }
     }
@@ -112,20 +128,13 @@ fn default_protocol() -> Protocol {
     match OTEL_EXPORTER_OTLP_PROTOCOL_DEFAULT {
         OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_PROTOBUF => Protocol::HttpBinary,
         OTEL_EXPORTER_OTLP_PROTOCOL_GRPC => Protocol::Grpc,
+        OTEL_EXPORTER_OTLP_PROTOCOL_HTTP_JSON => Protocol::HttpJson,
         _ => Protocol::HttpBinary,
     }
 }
 
-/// default endpoint for protocol
-fn default_endpoint(protocol: Protocol) -> String {
-    match protocol {
-        Protocol::Grpc => OTEL_EXPORTER_OTLP_GRPC_ENDPOINT_DEFAULT.to_string(),
-        Protocol::HttpBinary => OTEL_EXPORTER_OTLP_HTTP_ENDPOINT_DEFAULT.to_string(),
-    }
-}
-
 /// default user-agent headers
-#[cfg(any(feature = "grpc-tonic", feature = "http-proto"))]
+#[cfg(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json"))]
 fn default_headers() -> std::collections::HashMap<String, String> {
     let mut headers = std::collections::HashMap::new();
     headers.insert(
@@ -135,12 +144,13 @@ fn default_headers() -> std::collections::HashMap<String, String> {
     headers
 }
 
-/// Provide access to the export config field within the exporter builders.
+/// Provide access to the [ExportConfig] field within the exporter builders.
 pub trait HasExportConfig {
-    /// Return a mutable reference to the export config within the exporter builders.
+    /// Return a mutable reference to the [ExportConfig] within the exporter builders.
     fn export_config(&mut self) -> &mut ExportConfig;
 }
 
+/// Provide [ExportConfig] access to the [TonicExporterBuilder].
 #[cfg(feature = "grpc-tonic")]
 impl HasExportConfig for TonicExporterBuilder {
     fn export_config(&mut self) -> &mut ExportConfig {
@@ -148,14 +158,15 @@ impl HasExportConfig for TonicExporterBuilder {
     }
 }
 
-#[cfg(feature = "http-proto")]
+/// Provide [ExportConfig] access to the [HttpExporterBuilder].
+#[cfg(any(feature = "http-proto", feature = "http-json"))]
 impl HasExportConfig for HttpExporterBuilder {
     fn export_config(&mut self) -> &mut ExportConfig {
         &mut self.exporter_config
     }
 }
 
-/// Expose methods to override export configuration.
+/// Expose methods to override [ExportConfig].
 ///
 /// This trait will be implemented for every struct that implemented [`HasExportConfig`] trait.
 ///
@@ -164,21 +175,21 @@ impl HasExportConfig for HttpExporterBuilder {
 /// # #[cfg(all(feature = "trace", feature = "grpc-tonic"))]
 /// # {
 /// use crate::opentelemetry_otlp::WithExportConfig;
-/// let exporter_builder = opentelemetry_otlp::new_exporter()
-///     .tonic()
+/// let exporter_builder = opentelemetry_otlp::SpanExporter::builder()
+///     .with_tonic()
 ///     .with_endpoint("http://localhost:7201");
 /// # }
 /// ```
 pub trait WithExportConfig {
-    /// Set the address of the OTLP collector. If not set, the default address is used.
+    /// Set the address of the OTLP collector. If not set or set to empty string, the default address is used.
     fn with_endpoint<T: Into<String>>(self, endpoint: T) -> Self;
     /// Set the protocol to use when communicating with the collector.
     ///
-    /// Note that protocols that are not supported by exporters will be ignore. The exporter
+    /// Note that protocols that are not supported by exporters will be ignored. The exporter
     /// will use default protocol in this case.
     ///
     /// ## Note
-    /// All exporters in this crate are only support one protocol thus choosing the protocol is an no-op at the moment
+    /// All exporters in this crate only support one protocol, thus choosing the protocol is an no-op at the moment.
     fn with_protocol(self, protocol: Protocol) -> Self;
     /// Set the timeout to the collector.
     fn with_timeout(self, timeout: Duration) -> Self;
@@ -188,7 +199,7 @@ pub trait WithExportConfig {
 
 impl<B: HasExportConfig> WithExportConfig for B {
     fn with_endpoint<T: Into<String>>(mut self, endpoint: T) -> Self {
-        self.export_config().endpoint = endpoint.into();
+        self.export_config().endpoint = Some(endpoint.into());
         self
     }
 
@@ -210,26 +221,60 @@ impl<B: HasExportConfig> WithExportConfig for B {
     }
 }
 
-#[cfg(any(feature = "grpc-tonic", feature = "http-proto"))]
-fn parse_header_string(value: &str) -> impl Iterator<Item = (&str, &str)> {
+#[cfg(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json"))]
+fn parse_header_string(value: &str) -> impl Iterator<Item = (&str, String)> {
     value
         .split_terminator(',')
         .map(str::trim)
         .filter_map(parse_header_key_value_string)
 }
 
-#[cfg(any(feature = "grpc-tonic", feature = "http-proto"))]
-fn parse_header_key_value_string(key_value_string: &str) -> Option<(&str, &str)> {
+#[cfg(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json"))]
+fn url_decode(value: &str) -> Option<String> {
+    let mut result = String::with_capacity(value.len());
+    let mut chars_to_decode = Vec::<u8>::new();
+    let mut all_chars = value.chars();
+
+    loop {
+        let ch = all_chars.next();
+
+        if ch.is_some() && ch.unwrap() == '%' {
+            chars_to_decode.push(
+                u8::from_str_radix(&format!("{}{}", all_chars.next()?, all_chars.next()?), 16)
+                    .ok()?,
+            );
+            continue;
+        }
+
+        if !chars_to_decode.is_empty() {
+            result.push_str(std::str::from_utf8(&chars_to_decode).ok()?);
+            chars_to_decode.clear();
+        }
+
+        if let Some(c) = ch {
+            result.push(c);
+        } else {
+            return Some(result);
+        }
+    }
+}
+
+#[cfg(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json"))]
+fn parse_header_key_value_string(key_value_string: &str) -> Option<(&str, String)> {
     key_value_string
         .split_once('=')
-        .map(|(key, value)| (key.trim(), value.trim()))
+        .map(|(key, value)| {
+            (
+                key.trim(),
+                url_decode(value.trim()).unwrap_or(value.to_string()),
+            )
+        })
         .filter(|(key, value)| !key.is_empty() && !value.is_empty())
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "grpc-tonic", feature = "http-proto"))]
+#[cfg(any(feature = "grpc-tonic", feature = "http-proto", feature = "http-json"))]
 mod tests {
-
     pub(crate) fn run_env_test<T, F>(env_vars: T, f: F)
     where
         F: FnOnce(),
@@ -245,6 +290,73 @@ mod tests {
         )
     }
 
+    #[cfg(any(feature = "http-proto", feature = "http-json"))]
+    #[test]
+    fn test_default_http_endpoint() {
+        let exporter_builder = crate::HttpExporterBuilder::default();
+
+        assert_eq!(exporter_builder.exporter_config.endpoint, None);
+    }
+
+    #[cfg(feature = "grpc-tonic")]
+    #[test]
+    fn test_default_tonic_endpoint() {
+        let exporter_builder = crate::TonicExporterBuilder::default();
+
+        assert_eq!(exporter_builder.exporter_config.endpoint, None);
+    }
+
+    #[test]
+    fn test_default_protocol() {
+        #[cfg(all(
+            feature = "http-json",
+            not(any(feature = "grpc-tonic", feature = "http-proto"))
+        ))]
+        {
+            assert_eq!(
+                crate::exporter::default_protocol(),
+                crate::Protocol::HttpJson
+            );
+        }
+
+        #[cfg(all(
+            feature = "http-proto",
+            not(any(feature = "grpc-tonic", feature = "http-json"))
+        ))]
+        {
+            assert_eq!(
+                crate::exporter::default_protocol(),
+                crate::Protocol::HttpBinary
+            );
+        }
+
+        #[cfg(all(
+            feature = "grpc-tonic",
+            not(any(feature = "http-proto", feature = "http-json"))
+        ))]
+        {
+            assert_eq!(crate::exporter::default_protocol(), crate::Protocol::Grpc);
+        }
+    }
+
+    #[test]
+    fn test_url_decode() {
+        let test_cases = vec![
+            // Format: (encoded, expected_decoded)
+            ("v%201", Some("v 1")),
+            ("v 1", Some("v 1")),
+            ("%C3%B6%C3%A0%C2%A7%C3%96abcd%C3%84", Some("öà§ÖabcdÄ")),
+            ("v%XX1", None),
+        ];
+
+        for (encoded, expected_decoded) in test_cases {
+            assert_eq!(
+                super::url_decode(encoded),
+                expected_decoded.map(|v| v.to_string()),
+            )
+        }
+    }
+
     #[test]
     fn test_parse_header_string() {
         let test_cases = vec![
@@ -258,7 +370,10 @@ mod tests {
         for (input_str, expected_headers) in test_cases {
             assert_eq!(
                 super::parse_header_string(input_str).collect::<Vec<_>>(),
-                expected_headers,
+                expected_headers
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_string()))
+                    .collect::<Vec<_>>(),
             )
         }
     }
@@ -268,6 +383,15 @@ mod tests {
         let test_cases = vec![
             // Format: (input_str, expected_header)
             ("k1=v1", Some(("k1", "v1"))),
+            (
+                "Authentication=Basic AAA",
+                Some(("Authentication", "Basic AAA")),
+            ),
+            (
+                "Authentication=Basic%20AAA",
+                Some(("Authentication", "Basic AAA")),
+            ),
+            ("k1=%XX", Some(("k1", "%XX"))),
             ("", None),
             ("=v1", None),
             ("k1=", None),
@@ -276,7 +400,7 @@ mod tests {
         for (input_str, expected_headers) in test_cases {
             assert_eq!(
                 super::parse_header_key_value_string(input_str),
-                expected_headers,
+                expected_headers.map(|(k, v)| (k, v.to_string())),
             )
         }
     }

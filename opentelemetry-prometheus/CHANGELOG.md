@@ -2,6 +2,37 @@
 
 ## vNext
 
+- Bump msrv to 1.75.0.
+
+
+## v0.27.0
+
+- Update `opentelemetry` dependency version to 0.27
+- Update `opentelemetry_sdk` dependency version to 0.27
+- Update `opentelemetry-semantic-conventions` dependency version to 0.27
+
+
+## v0.17.0
+
+### Changed
+
+- Update `opentelemetry` dependency version to 0.24
+- Update `opentelemetry_sdk` dependency version to 0.24
+- Update `opentelemetry-semantic-conventions` dependency version to 0.16
+
+## v0.16.0
+
+### Added
+
+- Add `ResourceSelector` to allow attaching resource as attributes to metrics [#1608](https://github.com/open-telemetry/opentelemetry-rust/pull/1608)
+
+### Changed
+
+- Update `opentelemetry` dependency version to 0.23
+- Update `opentelemetry_sdk` dependency version to 0.23
+
+## v0.15.0
+
 ### Changed
 
 - Omit empty `otel_scope_info` and `otel_target_info` metrics [#1428](https://github.com/open-telemetry/opentelemetry-rust/pull/1428)
@@ -10,7 +41,7 @@
 
 ### Fixed
 
-- Fix UCUM annotation escaping by ignoring unknown instrument units and annotations (#1348)
+- Fix UCUM annotation escaping by ignoring unknown instrument units and annotations [#1348](https://github.com/open-telemetry/opentelemetry-rust/pull/1348)
 
 ## v0.14.0
 

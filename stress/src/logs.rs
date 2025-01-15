@@ -1,81 +1,75 @@
+/*
+    Stress test results:
+    OS: Ubuntu 22.04.4 LTS (5.15.153.1-microsoft-standard-WSL2)
+    Hardware: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz, 16vCPUs,
+    RAM: 64.0 GB
+    ~31 M/sec
+
+    Hardware: AMD EPYC 7763 64-Core Processor - 2.44 GHz, 16vCPUs,
+    ~40 M /sec
+*/
+
+use opentelemetry::InstrumentationScope;
 use opentelemetry_appender_tracing::layer;
-use opentelemetry_sdk::logs::{LogProcessor, LoggerProvider};
+use opentelemetry_sdk::export::logs::{LogBatch, LogExporter};
+use opentelemetry_sdk::logs::{LogProcessor, LogRecord, LogResult, LoggerProvider};
+
 use tracing::error;
-use tracing_subscriber::{prelude::*, Layer};
+use tracing_subscriber::prelude::*;
 
 mod throughput;
 
-struct NoopEventVisitor;
+#[derive(Debug, Clone)]
+struct MockLogExporter;
 
-impl tracing::field::Visit for NoopEventVisitor {
-    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
-}
-
-struct NoOpLogLayer;
-impl<S> Layer<S> for NoOpLogLayer
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
+impl LogExporter for MockLogExporter {
+    fn export(
         &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let mut visitor = NoopEventVisitor;
-        event.record(&mut visitor);
-    }
-
-    fn event_enabled(
-        &self,
-        _event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) -> bool {
-        true
+        _batch: LogBatch<'_>,
+    ) -> impl std::future::Future<Output = LogResult<()>> + Send {
+        async { Ok(()) }
     }
 }
 
 #[derive(Debug)]
-pub struct NoOpLogProcessor;
+pub struct MockLogProcessor {
+    exporter: MockLogExporter,
+}
 
-impl LogProcessor for NoOpLogProcessor {
-    fn emit(&self, _data: opentelemetry_sdk::export::logs::LogData) {}
+impl LogProcessor for MockLogProcessor {
+    fn emit(&self, record: &mut opentelemetry_sdk::logs::LogRecord, scope: &InstrumentationScope) {
+        let log_tuple = &[(record as &LogRecord, scope)];
+        let _ = futures_executor::block_on(self.exporter.export(LogBatch::new(log_tuple)));
+    }
 
-    fn force_flush(&self) -> opentelemetry::logs::LogResult<()> {
+    fn force_flush(&self) -> LogResult<()> {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> opentelemetry::logs::LogResult<()> {
+    fn shutdown(&self) -> LogResult<()> {
         Ok(())
-    }
-
-    fn event_enabled(
-        &self,
-        _level: opentelemetry::logs::Severity,
-        _target: &str,
-        _name: &str,
-    ) -> bool {
-        true
     }
 }
 
 fn main() {
     // LoggerProvider with a no-op processor.
     let provider: LoggerProvider = LoggerProvider::builder()
-        .with_log_processor(NoOpLogProcessor {})
+        .with_log_processor(MockLogProcessor {
+            exporter: MockLogExporter {},
+        })
         .build();
 
     // Use the OpenTelemetryTracingBridge to test the throughput of the appender-tracing.
     let layer = layer::OpenTelemetryTracingBridge::new(&provider);
     tracing_subscriber::registry().with(layer).init();
-
-    // Use a "Do-Nothing" layer to test the throughput of the tracing system without
-    // OpenTelemetry overhead. This helps measure the OpenTelemetry overhead.
-    // let noop_layer = NoOpLogLayer;
-    // tracing_subscriber::registry().with(noop_layer).init();
-
     throughput::test_throughput(test_log);
 }
 
 fn test_log() {
-    error!(target: "my-system", event_id = 20, event_name = "my-event_name", user_name = "otel", user_email = "otel@opentelemetry.io");
+    error!(
+        name = "CheckoutFailed",
+        book_id = "12345",
+        book_title = "Rust Programming Adventures",
+        message = "Unable to process checkout."
+    );
 }

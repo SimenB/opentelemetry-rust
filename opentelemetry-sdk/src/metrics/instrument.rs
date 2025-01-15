@@ -1,20 +1,13 @@
-use std::{any::Any, borrow::Cow, collections::HashSet, hash::Hash, marker, sync::Arc};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use opentelemetry::{
-    metrics::{
-        AsyncInstrument, MetricsError, Result, SyncCounter, SyncGauge, SyncHistogram,
-        SyncUpDownCounter, Unit,
-    },
-    Key, KeyValue,
+    metrics::{AsyncInstrument, SyncInstrument},
+    InstrumentationScope, Key, KeyValue,
 };
 
-use crate::{
-    attributes::AttributeSet,
-    instrumentation::Scope,
-    metrics::{aggregation::Aggregation, internal::Measure},
-};
+use crate::metrics::{aggregation::Aggregation, internal::Measure};
 
-pub(crate) const EMPTY_MEASURE_MSG: &str = "no aggregators for observable instrument";
+use super::Temporality;
 
 /// The identifier of a group of instruments that all perform the same function.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -43,6 +36,35 @@ pub enum InstrumentKind {
     ObservableGauge,
 }
 
+impl InstrumentKind {
+    /// Select the [Temporality] preference based on [InstrumentKind]
+    ///
+    /// [exporter-docs]: https://github.com/open-telemetry/opentelemetry-specification/blob/a1c13d59bb7d0fb086df2b3e1eaec9df9efef6cc/specification/metrics/sdk_exporters/otlp.md#additional-configuration
+    pub(crate) fn temporality_preference(&self, temporality: Temporality) -> Temporality {
+        match temporality {
+            Temporality::Cumulative => Temporality::Cumulative,
+            Temporality::Delta => match self {
+                Self::Counter
+                | Self::Histogram
+                | Self::ObservableCounter
+                | Self::Gauge
+                | Self::ObservableGauge => Temporality::Delta,
+                Self::UpDownCounter | InstrumentKind::ObservableUpDownCounter => {
+                    Temporality::Cumulative
+                }
+            },
+            Temporality::LowMemory => match self {
+                Self::Counter | InstrumentKind::Histogram => Temporality::Delta,
+                Self::ObservableCounter
+                | Self::Gauge
+                | Self::ObservableGauge
+                | Self::UpDownCounter
+                | Self::ObservableUpDownCounter => Temporality::Cumulative,
+            },
+        }
+    }
+}
+
 /// Describes properties an instrument is created with, also used for filtering
 /// in [View](crate::metrics::View)s.
 ///
@@ -61,6 +83,7 @@ pub enum InstrumentKind {
 /// ```
 #[derive(Clone, Default, Debug, PartialEq)]
 #[non_exhaustive]
+#[allow(unreachable_pub)]
 pub struct Instrument {
     /// The human-readable identifier of the instrument.
     pub name: Cow<'static, str>,
@@ -69,11 +92,12 @@ pub struct Instrument {
     /// The functional group of the instrument.
     pub kind: Option<InstrumentKind>,
     /// Unit is the unit of measurement recorded by the instrument.
-    pub unit: Unit,
+    pub unit: Cow<'static, str>,
     /// The instrumentation that created the instrument.
-    pub scope: Scope,
+    pub scope: InstrumentationScope,
 }
 
+#[cfg(feature = "spec_unstable_metrics_views")]
 impl Instrument {
     /// Create a new instrument with default values
     pub fn new() -> Self {
@@ -93,13 +117,13 @@ impl Instrument {
     }
 
     /// Set the instrument unit.
-    pub fn unit(mut self, unit: Unit) -> Self {
-        self.unit = unit;
+    pub fn unit(mut self, unit: impl Into<Cow<'static, str>>) -> Self {
+        self.unit = unit.into();
         self
     }
 
     /// Set the instrument scope.
-    pub fn scope(mut self, scope: Scope) -> Self {
+    pub fn scope(mut self, scope: InstrumentationScope) -> Self {
         self.scope = scope;
         self
     }
@@ -109,8 +133,8 @@ impl Instrument {
         self.name == ""
             && self.description == ""
             && self.kind.is_none()
-            && self.unit.as_str() == ""
-            && self.scope == Scope::default()
+            && self.unit == ""
+            && self.scope == InstrumentationScope::default()
     }
 
     pub(crate) fn matches(&self, other: &Instrument) -> bool {
@@ -134,17 +158,15 @@ impl Instrument {
     }
 
     pub(crate) fn matches_unit(&self, other: &Instrument) -> bool {
-        self.unit.as_str() == "" || self.unit == other.unit
+        self.unit.is_empty() || self.unit.as_ref() == other.unit.as_ref()
     }
 
     pub(crate) fn matches_scope(&self, other: &Instrument) -> bool {
-        (self.scope.name.is_empty() || self.scope.name.as_ref() == other.scope.name.as_ref())
-            && (self.scope.version.is_none()
-                || self.scope.version.as_ref().map(AsRef::as_ref)
-                    == other.scope.version.as_ref().map(AsRef::as_ref))
-            && (self.scope.schema_url.is_none()
-                || self.scope.schema_url.as_ref().map(AsRef::as_ref)
-                    == other.scope.schema_url.as_ref().map(AsRef::as_ref))
+        (self.scope.name().is_empty() || self.scope.name() == other.scope.name())
+            && (self.scope.version().is_none()
+                || self.scope.version().as_ref() == other.scope.version().as_ref())
+            && (self.scope.schema_url().is_none()
+                || self.scope.schema_url().as_ref() == other.scope.schema_url().as_ref())
     }
 }
 
@@ -165,13 +187,14 @@ impl Instrument {
 /// ```
 #[derive(Default, Debug)]
 #[non_exhaustive]
+#[allow(unreachable_pub)]
 pub struct Stream {
     /// The human-readable identifier of the stream.
     pub name: Cow<'static, str>,
     /// Describes the purpose of the data.
     pub description: Cow<'static, str>,
     /// the unit of measurement recorded.
-    pub unit: Unit,
+    pub unit: Cow<'static, str>,
     /// Aggregation the stream uses for an instrument.
     pub aggregation: Option<Aggregation>,
     /// An allow-list of attribute keys that will be preserved for the stream.
@@ -182,6 +205,7 @@ pub struct Stream {
     pub allowed_attribute_keys: Option<Arc<HashSet<Key>>>,
 }
 
+#[cfg(feature = "spec_unstable_metrics_views")]
 impl Stream {
     /// Create a new stream with empty values.
     pub fn new() -> Self {
@@ -201,8 +225,8 @@ impl Stream {
     }
 
     /// Set the stream unit.
-    pub fn unit(mut self, unit: Unit) -> Self {
-        self.unit = unit;
+    pub fn unit(mut self, unit: impl Into<Cow<'static, str>>) -> Self {
+        self.unit = unit.into();
         self
     }
 
@@ -233,7 +257,7 @@ pub(crate) struct InstrumentId {
     /// Defines the functional group of the instrument.
     pub(crate) kind: InstrumentKind,
     /// The unit of measurement recorded.
-    pub(crate) unit: Unit,
+    pub(crate) unit: Cow<'static, str>,
     /// Number is the underlying data type of the instrument.
     pub(crate) number: Cow<'static, str>,
 }
@@ -258,132 +282,29 @@ pub(crate) struct ResolvedMeasures<T> {
     pub(crate) measures: Vec<Arc<dyn Measure<T>>>,
 }
 
-impl<T: Copy + 'static> SyncCounter<T> for ResolvedMeasures<T> {
-    fn add(&self, val: T, attrs: &[KeyValue]) {
+impl<T: Copy + 'static> SyncInstrument<T> for ResolvedMeasures<T> {
+    fn measure(&self, val: T, attrs: &[KeyValue]) {
         for measure in &self.measures {
-            measure.call(val, AttributeSet::from(attrs))
+            measure.call(val, attrs)
         }
     }
 }
-
-impl<T: Copy + 'static> SyncUpDownCounter<T> for ResolvedMeasures<T> {
-    fn add(&self, val: T, attrs: &[KeyValue]) {
-        for measure in &self.measures {
-            measure.call(val, AttributeSet::from(attrs))
-        }
-    }
-}
-
-impl<T: Copy + 'static> SyncGauge<T> for ResolvedMeasures<T> {
-    fn record(&self, val: T, attrs: &[KeyValue]) {
-        for measure in &self.measures {
-            measure.call(val, AttributeSet::from(attrs))
-        }
-    }
-}
-
-impl<T: Copy + 'static> SyncHistogram<T> for ResolvedMeasures<T> {
-    fn record(&self, val: T, attrs: &[KeyValue]) {
-        for measure in &self.measures {
-            measure.call(val, AttributeSet::from(attrs))
-        }
-    }
-}
-
-/// A comparable unique identifier of an observable.
-#[derive(Clone, Debug)]
-pub(crate) struct ObservableId<T> {
-    pub(crate) inner: IdInner,
-    _marker: marker::PhantomData<T>,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) struct IdInner {
-    /// The human-readable identifier of the instrument.
-    pub(crate) name: Cow<'static, str>,
-    /// describes the purpose of the instrument.
-    pub(crate) description: Cow<'static, str>,
-    /// The functional group of the instrument.
-    kind: InstrumentKind,
-    /// The unit of measurement recorded by the instrument.
-    pub(crate) unit: Unit,
-    /// The instrumentation that created the instrument.
-    scope: Scope,
-}
-
-impl<T> Hash for ObservableId<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.inner.hash(state)
-    }
-}
-
-impl<T> PartialEq for ObservableId<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner
-    }
-}
-
-impl<T> Eq for ObservableId<T> {}
 
 #[derive(Clone)]
 pub(crate) struct Observable<T> {
-    pub(crate) id: ObservableId<T>,
     measures: Vec<Arc<dyn Measure<T>>>,
 }
 
 impl<T> Observable<T> {
-    pub(crate) fn new(
-        scope: Scope,
-        kind: InstrumentKind,
-        name: Cow<'static, str>,
-        description: Cow<'static, str>,
-        unit: Unit,
-        measures: Vec<Arc<dyn Measure<T>>>,
-    ) -> Self {
-        Self {
-            id: ObservableId {
-                inner: IdInner {
-                    name,
-                    description,
-                    kind,
-                    unit,
-                    scope,
-                },
-                _marker: marker::PhantomData,
-            },
-            measures,
-        }
-    }
-
-    /// Returns `Err` if the observable should not be registered, and `Ok` if it
-    /// should.
-    ///
-    /// An error is returned if this observable is effectively a no-op because it does not have
-    /// any aggregators. Also, an error is returned if scope defines a Meter other
-    /// than the observable it was created by.
-    pub(crate) fn registerable(&self, scope: &Scope) -> Result<()> {
-        if self.measures.is_empty() {
-            return Err(MetricsError::Other(EMPTY_MEASURE_MSG.into()));
-        }
-        if &self.id.inner.scope != scope {
-            return Err(MetricsError::Other(format!(
-                "invalid registration: observable {} from Meter {:?}, registered with Meter {}",
-                self.id.inner.name, self.id.inner.scope, scope.name,
-            )));
-        }
-
-        Ok(())
+    pub(crate) fn new(measures: Vec<Arc<dyn Measure<T>>>) -> Self {
+        Self { measures }
     }
 }
 
 impl<T: Copy + Send + Sync + 'static> AsyncInstrument<T> for Observable<T> {
     fn observe(&self, measurement: T, attrs: &[KeyValue]) {
         for measure in &self.measures {
-            measure.call(measurement, AttributeSet::from(attrs))
+            measure.call(measurement, attrs)
         }
-    }
-
-    fn as_any(&self) -> Arc<dyn Any> {
-        Arc::new(self.clone())
     }
 }

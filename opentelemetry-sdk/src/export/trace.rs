@@ -2,7 +2,7 @@
 use crate::Resource;
 use futures_util::future::BoxFuture;
 use opentelemetry::trace::{SpanContext, SpanId, SpanKind, Status, TraceError};
-use opentelemetry::KeyValue;
+use opentelemetry::{InstrumentationScope, KeyValue};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::time::SystemTime;
@@ -63,6 +63,9 @@ pub trait SpanExporter: Send + Sync + Debug {
     fn force_flush(&mut self) -> BoxFuture<'static, ExportResult> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Set the resource for the exporter.
+    fn set_resource(&mut self, _resource: &Resource) {}
 }
 
 /// `SpanData` contains all the information collected by a `Span` and can be used
@@ -92,8 +95,6 @@ pub struct SpanData {
     pub links: crate::trace::SpanLinks,
     /// Span status
     pub status: Status,
-    /// Resource contains attributes representing an entity that produced this span.
-    pub resource: Cow<'static, Resource>,
-    /// Instrumentation library that produced this span
-    pub instrumentation_lib: crate::InstrumentationLibrary,
+    /// Instrumentation scope that produced this span
+    pub instrumentation_scope: InstrumentationScope,
 }

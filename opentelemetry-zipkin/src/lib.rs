@@ -26,13 +26,13 @@
 //!
 //! fn main() -> Result<(), TraceError> {
 //!     global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
-//!     let tracer = opentelemetry_zipkin::new_pipeline().install_simple()?;
+//!     let (tracer, provider) = opentelemetry_zipkin::new_pipeline().install_simple()?;
 //!
 //!     tracer.in_span("doing_work", |cx| {
 //!         // Traced app logic here...
 //!     });
 //!
-//!     global::shutdown_tracer_provider(); // sending remaining spans
+//!     provider.shutdown().expect("TracerProvider should shutdown successfully"); // sending remaining spans
 //!
 //!     Ok(())
 //! }
@@ -95,28 +95,33 @@
 //! use http::{Request, Response};
 //! use std::convert::TryInto as _;
 //! use std::error::Error;
-//! use hyper::{client::HttpConnector, Body};
+//! use http_body_util::{BodyExt, Full};
+//! use hyper_util::{
+//!     client::legacy::{Client, connect::HttpConnector},
+//!     rt::tokio::TokioExecutor,
+//! };
 //!
 //! // `reqwest` is supported through a feature, if you prefer an
 //! // alternate http client you can add support by implementing `HttpClient` as
 //! // shown here.
 //! #[derive(Debug)]
-//! struct HyperClient(hyper::Client<HttpConnector, Body>);
+//! struct HyperClient(Client<HttpConnector, Full<Bytes>>);
 //!
 //! #[async_trait]
 //! impl HttpClient for HyperClient {
 //!     async fn send(&self, req: Request<Vec<u8>>) -> Result<Response<Bytes>, HttpError> {
 //!         let resp = self
 //!             .0
-//!             .request(req.map(|v| Body::from(v)))
+//!             .request(req.map(|v| Full::new(Bytes::from(v))))
 //!             .await?;
 //!
 //!         let response = Response::builder()
 //!             .status(resp.status())
 //!             .body({
-//!                 hyper::body::to_bytes(resp.into_body())
+//!                 resp.collect()
 //!                     .await
 //!                     .expect("cannot decode response")
+//!                     .to_bytes()
 //!             })
 //!             .expect("cannot build response");
 //!
@@ -126,8 +131,13 @@
 //!
 //! fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 //!     global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
-//!     let tracer = opentelemetry_zipkin::new_pipeline()
-//!         .with_http_client(HyperClient(hyper::Client::new()))
+//!     let (tracer, provider) = opentelemetry_zipkin::new_pipeline()
+//!         .with_http_client(
+//!             HyperClient(
+//!                 Client::builder(TokioExecutor::new())
+//!                     .build_http()
+//!             )
+//!         )
 //!         .with_service_name("my_app")
 //!         .with_service_address("127.0.0.1:8080".parse()?)
 //!         .with_collector_endpoint("http://localhost:9411/api/v2/spans")
@@ -138,7 +148,7 @@
 //!                 .with_max_events_per_span(64)
 //!                 .with_max_attributes_per_span(16)
 //!                 .with_max_events_per_span(16)
-//!                 .with_resource(Resource::new(vec![KeyValue::new("key", "value")])),
+//!                 .with_resource(Resource::builder_empty().with_attribute(KeyValue::new("key", "value")).build()),
 //!         )
 //!         .install_batch(opentelemetry_sdk::runtime::Tokio)?;
 //!
@@ -146,7 +156,7 @@
 //!         // Traced app logic here...
 //!     });
 //!
-//!     global::shutdown_tracer_provider(); // sending remaining spans
+//!     provider.shutdown()?; // sending remaining spans
 //!
 //!     Ok(())
 //! }

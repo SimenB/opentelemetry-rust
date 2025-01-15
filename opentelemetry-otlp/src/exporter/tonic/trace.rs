@@ -1,17 +1,22 @@
 use core::fmt;
 
 use futures_core::future::BoxFuture;
-use opentelemetry::trace::TraceError;
+use opentelemetry::{otel_debug, trace::TraceError};
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_client::TraceServiceClient, ExportTraceServiceRequest,
 };
 use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
 use tonic::{codegen::CompressionEncoding, service::Interceptor, transport::Channel, Request};
 
+use opentelemetry_proto::transform::trace::tonic::group_spans_by_resource_and_scope;
+
 use super::BoxInterceptor;
 
 pub(crate) struct TonicTracesClient {
     inner: Option<ClientInner>,
+    #[allow(dead_code)]
+    // <allow dead> would be removed once we support set_resource for metrics.
+    resource: opentelemetry_proto::transform::common::tonic::ResourceAttributesWithSchema,
 }
 
 struct ClientInner {
@@ -33,14 +38,19 @@ impl TonicTracesClient {
     ) -> Self {
         let mut client = TraceServiceClient::new(channel);
         if let Some(compression) = compression {
-            client = client.send_compressed(compression);
+            client = client
+                .send_compressed(compression)
+                .accept_compressed(compression);
         }
+
+        otel_debug!(name: "TonicsTracesClientBuilt");
 
         TonicTracesClient {
             inner: Some(ClientInner {
                 client,
                 interceptor,
             }),
+            resource: Default::default(),
         }
     }
 }
@@ -64,14 +74,16 @@ impl SpanExporter for TonicTracesClient {
             }
         };
 
+        let resource_spans = group_spans_by_resource_and_scope(batch, &self.resource);
+
+        otel_debug!(name: "TonicsTracesClient.CallingExport");
+
         Box::pin(async move {
             client
                 .export(Request::from_parts(
                     metadata,
                     extensions,
-                    ExportTraceServiceRequest {
-                        resource_spans: batch.into_iter().map(Into::into).collect(),
-                    },
+                    ExportTraceServiceRequest { resource_spans },
                 ))
                 .await
                 .map_err(crate::Error::from)?;
@@ -82,5 +94,9 @@ impl SpanExporter for TonicTracesClient {
 
     fn shutdown(&mut self) {
         let _ = self.inner.take();
+    }
+
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.resource = resource.into();
     }
 }

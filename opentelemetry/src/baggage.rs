@@ -15,17 +15,21 @@
 //!
 //! [W3C Baggage]: https://w3c.github.io/baggage
 use crate::{Context, Key, KeyValue, Value};
-use once_cell::sync::Lazy;
 use std::collections::{hash_map, HashMap};
 use std::fmt;
-use std::iter::FromIterator;
-use urlencoding::encode;
+use std::sync::OnceLock;
 
-static DEFAULT_BAGGAGE: Lazy<Baggage> = Lazy::new(Baggage::default);
+static DEFAULT_BAGGAGE: OnceLock<Baggage> = OnceLock::new();
 
 const MAX_KEY_VALUE_PAIRS: usize = 180;
 const MAX_BYTES_FOR_ONE_PAIR: usize = 4096;
 const MAX_LEN_OF_ALL_PAIRS: usize = 8192;
+
+/// Returns the default baggage, ensuring it is initialized only once.
+#[inline]
+fn get_default_baggage() -> &'static Baggage {
+    DEFAULT_BAGGAGE.get_or_init(Baggage::default)
+}
 
 /// A set of name/value pairs describing user-defined properties.
 ///
@@ -77,8 +81,8 @@ impl Baggage {
     ///
     /// assert_eq!(cc.get("my-name"), Some(&Value::from("my-value")))
     /// ```
-    pub fn get<T: Into<Key>>(&self, key: T) -> Option<&Value> {
-        self.inner.get(&key.into()).map(|(value, _metadata)| value)
+    pub fn get<K: AsRef<str>>(&self, key: K) -> Option<&Value> {
+        self.inner.get(key.as_ref()).map(|(value, _metadata)| value)
     }
 
     /// Returns a reference to the value and metadata associated with a given name
@@ -93,8 +97,8 @@ impl Baggage {
     /// // By default, the metadata is empty
     /// assert_eq!(cc.get_with_metadata("my-name"), Some(&(Value::from("my-value"), BaggageMetadata::from(""))))
     /// ```
-    pub fn get_with_metadata<T: Into<Key>>(&self, key: T) -> Option<&(Value, BaggageMetadata)> {
-        self.inner.get(&key.into())
+    pub fn get_with_metadata<K: AsRef<str>>(&self, key: K) -> Option<&(Value, BaggageMetadata)> {
+        self.inner.get(key.as_ref())
     }
 
     /// Inserts a name/value pair into the baggage.
@@ -282,10 +286,25 @@ impl FromIterator<KeyValueMetadata> for Baggage {
     }
 }
 
+fn encode(s: &str) -> String {
+    let mut encoded_string = String::with_capacity(s.len());
+
+    for byte in s.as_bytes() {
+        match *byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'~' => {
+                encoded_string.push(*byte as char)
+            }
+            b' ' => encoded_string.push_str("%20"),
+            _ => encoded_string.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    encoded_string
+}
+
 impl fmt::Display for Baggage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, (k, v)) in self.into_iter().enumerate() {
-            write!(f, "{}={}", k, encode(&v.0.as_str()))?;
+            write!(f, "{}={}", k, encode(v.0.as_str().as_ref()))?;
             if !v.1.as_str().is_empty() {
                 write!(f, ";{}", v.1)?;
             }
@@ -386,7 +405,7 @@ impl BaggageExt for Context {
     }
 
     fn baggage(&self) -> &Baggage {
-        self.get::<Baggage>().unwrap_or(&DEFAULT_BAGGAGE)
+        self.get::<Baggage>().unwrap_or(get_default_baggage())
     }
 }
 
@@ -471,6 +490,30 @@ mod tests {
         let mut baggage = Baggage::new();
         baggage.insert("🚫", "not ascii key");
         assert_eq!(baggage.len(), 0, "did not insert invalid key");
+    }
+
+    #[test]
+    fn test_ascii_values() {
+        let string1 = "test_ 123";
+        let string2 = "Hello123";
+        let string3 = "This & That = More";
+        let string4 = "Unicode: 😊";
+        let string5 = "Non-ASCII: áéíóú";
+        let string6 = "Unsafe: ~!@#$%^&*()_+{}[];:'\\\"<>?,./";
+        let string7: &str = "🚀Unicode:";
+        let string8 = "ΑΒΓ";
+
+        assert_eq!(encode(string1), "test_%20123");
+        assert_eq!(encode(string2), "Hello123");
+        assert_eq!(encode(string3), "This%20%26%20That%20%3D%20More");
+        assert_eq!(encode(string4), "Unicode%3A%20%F0%9F%98%8A");
+        assert_eq!(
+            encode(string5),
+            "Non-ASCII%3A%20%C3%A1%C3%A9%C3%AD%C3%B3%C3%BA"
+        );
+        assert_eq!(encode(string6), "Unsafe%3A%20~%21%40%23%24%25%5E%26%2A%28%29_%2B%7B%7D%5B%5D%3B%3A%27%5C%22%3C%3E%3F%2C.%2F");
+        assert_eq!(encode(string7), "%F0%9F%9A%80Unicode%3A");
+        assert_eq!(encode(string8), "%CE%91%CE%92%CE%93");
     }
 
     #[test]
