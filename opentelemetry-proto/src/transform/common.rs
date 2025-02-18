@@ -23,40 +23,93 @@ pub mod tonic {
     use std::borrow::Cow;
 
     #[cfg(any(feature = "trace", feature = "logs"))]
-    use opentelemetry_sdk::Resource;
+    #[derive(Debug, Default)]
+    pub struct ResourceAttributesWithSchema {
+        pub attributes: Attributes,
+        pub schema_url: Option<String>,
+    }
 
-    impl From<opentelemetry_sdk::InstrumentationLibrary> for InstrumentationScope {
-        fn from(library: opentelemetry_sdk::InstrumentationLibrary) -> Self {
-            InstrumentationScope {
-                name: library.name.into_owned(),
-                version: library.version.map(Cow::into_owned).unwrap_or_default(),
-                attributes: Attributes::from(library.attributes).0,
-                ..Default::default()
+    #[cfg(any(feature = "trace", feature = "logs"))]
+    impl From<&opentelemetry_sdk::Resource> for ResourceAttributesWithSchema {
+        fn from(resource: &opentelemetry_sdk::Resource) -> Self {
+            ResourceAttributesWithSchema {
+                attributes: resource_attributes(resource),
+                schema_url: resource.schema_url().map(ToString::to_string),
             }
         }
     }
 
-    impl From<&opentelemetry_sdk::InstrumentationLibrary> for InstrumentationScope {
-        fn from(library: &opentelemetry_sdk::InstrumentationLibrary) -> Self {
-            InstrumentationScope {
-                name: library.name.to_string(),
-                version: library
-                    .version
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-                attributes: Attributes::from(library.attributes.clone()).0,
-                ..Default::default()
+    #[cfg(any(feature = "trace", feature = "logs"))]
+    use opentelemetry_sdk::Resource;
+
+    impl
+        From<(
+            opentelemetry::InstrumentationScope,
+            Option<Cow<'static, str>>,
+        )> for InstrumentationScope
+    {
+        fn from(
+            data: (
+                opentelemetry::InstrumentationScope,
+                Option<Cow<'static, str>>,
+            ),
+        ) -> Self {
+            let (library, target) = data;
+            if let Some(t) = target {
+                InstrumentationScope {
+                    name: t.to_string(),
+                    version: String::new(),
+                    attributes: vec![],
+                    ..Default::default()
+                }
+            } else {
+                InstrumentationScope {
+                    name: library.name().to_owned(),
+                    version: library.version().map(ToOwned::to_owned).unwrap_or_default(),
+                    attributes: Attributes::from(library.attributes().cloned()).0,
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
+    impl
+        From<(
+            &opentelemetry::InstrumentationScope,
+            Option<Cow<'static, str>>,
+        )> for InstrumentationScope
+    {
+        fn from(
+            data: (
+                &opentelemetry::InstrumentationScope,
+                Option<Cow<'static, str>>,
+            ),
+        ) -> Self {
+            let (library, target) = data;
+            if let Some(t) = target {
+                InstrumentationScope {
+                    name: t.to_string(),
+                    version: String::new(),
+                    attributes: vec![],
+                    ..Default::default()
+                }
+            } else {
+                InstrumentationScope {
+                    name: library.name().to_owned(),
+                    version: library.version().map(ToOwned::to_owned).unwrap_or_default(),
+                    attributes: Attributes::from(library.attributes().cloned()).0,
+                    ..Default::default()
+                }
             }
         }
     }
 
     /// Wrapper type for Vec<`KeyValue`>
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct Attributes(pub ::std::vec::Vec<crate::proto::tonic::common::v1::KeyValue>);
 
-    impl From<Vec<opentelemetry::KeyValue>> for Attributes {
-        fn from(kvs: Vec<opentelemetry::KeyValue>) -> Self {
+    impl<I: IntoIterator<Item = opentelemetry::KeyValue>> From<I> for Attributes {
+        fn from(kvs: I) -> Self {
             Attributes(
                 kvs.into_iter()
                     .map(|api_kv| KeyValue {
@@ -95,7 +148,9 @@ pub mod tonic {
                         Array::I64(vals) => array_into_proto(vals),
                         Array::F64(vals) => array_into_proto(vals),
                         Array::String(vals) => array_into_proto(vals),
+                        _ => unreachable!("Nonexistent array type"), // Needs to be updated when new array types are added
                     })),
+                    _ => unreachable!("Nonexistent value type"), // Needs to be updated when new value types are added
                 },
             }
         }

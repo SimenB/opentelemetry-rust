@@ -1,33 +1,32 @@
-use opentelemetry::global::shutdown_tracer_provider;
 use opentelemetry::{
     global,
     trace::{TraceContextExt, TraceError, Tracer},
     KeyValue,
 };
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{runtime, trace as sdktrace, Resource};
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::Resource;
+
 use std::error::Error;
 
-fn init_tracer() -> Result<opentelemetry_sdk::trace::Tracer, TraceError> {
-    opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint("http://localhost:4317"),
+fn init_tracer_provider() -> Result<opentelemetry_sdk::trace::SdkTracerProvider, TraceError> {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()?;
+
+    Ok(SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("tracing-jaeger")
+                .build(),
         )
-        .with_trace_config(
-            sdktrace::config().with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                "tracing-jaeger",
-            )])),
-        )
-        .install_batch(runtime::Tokio)
+        .build())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let _tracer = init_tracer().expect("Failed to initialize tracer.");
+    let tracer_provider = init_tracer_provider().expect("Failed to initialize tracer provider.");
+    global::set_tracer_provider(tracer_provider.clone());
 
     let tracer = global::tracer("tracing-jaeger");
     tracer.in_span("main-operation", |cx| {
@@ -43,6 +42,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         });
     });
 
-    shutdown_tracer_provider();
+    tracer_provider.shutdown()?;
+
     Ok(())
 }

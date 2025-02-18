@@ -44,6 +44,8 @@
 //!
 //! ```
 //! use opentelemetry::{global, trace::{Span, Tracer, TracerProvider}};
+//! use opentelemetry::InstrumentationScope;
+//! use std::sync::Arc;
 //!
 //! fn my_library_function() {
 //!     // Use the global tracer provider to get access to the user-specified
@@ -51,12 +53,12 @@
 //!     let tracer_provider = global::tracer_provider();
 //!
 //!     // Get a tracer for this library
-//!     let tracer = tracer_provider.versioned_tracer(
-//!         "my_name",
-//!         Some(env!("CARGO_PKG_VERSION")),
-//!         Some("https://opentelemetry.io/schemas/1.17.0"),
-//!         None
-//!     );
+//!     let scope = InstrumentationScope::builder("my_name")
+//!         .with_version(env!("CARGO_PKG_VERSION"))
+//!         .with_schema_url("https://opentelemetry.io/schemas/1.17.0")
+//!         .build();
+//!
+//!     let tracer = tracer_provider.tracer_with_scope(scope);
 //!
 //!     // Create spans
 //!     let mut span = tracer.start("doing_work");
@@ -180,12 +182,21 @@ pub use self::{
         get_active_span, mark_span_as_active, FutureExt, SpanRef, TraceContextExt, WithContext,
     },
     span::{Span, SpanKind, Status},
-    span_context::{SpanContext, SpanId, TraceFlags, TraceId, TraceState},
+    span_context::{SpanContext, TraceState},
     tracer::{SamplingDecision, SamplingResult, SpanBuilder, Tracer},
     tracer_provider::TracerProvider,
 };
-use crate::{ExportError, KeyValue};
+use crate::KeyValue;
+pub use crate::{SpanId, TraceFlags, TraceId};
 use std::sync::PoisonError;
+
+// TODO - Move ExportError and TraceError to opentelemetry-sdk
+
+/// Trait for errors returned by exporters
+pub trait ExportError: std::error::Error + Send + Sync + 'static {
+    /// The name of exporter that returned this error
+    fn exporter_name(&self) -> &'static str;
+}
 
 /// Describe the result of operations in tracing API.
 pub type TraceResult<T> = Result<T, TraceError>;
@@ -195,12 +206,16 @@ pub type TraceResult<T> = Result<T, TraceError>;
 #[non_exhaustive]
 pub enum TraceError {
     /// Export failed with the error returned by the exporter
-    #[error("Exporter {} encountered the following error(s): {0}", .0.exporter_name())]
+    #[error("Exporter {0} encountered the following error(s): {name}", name = .0.exporter_name())]
     ExportFailed(Box<dyn ExportError>),
 
     /// Export failed to finish after certain period and processor stopped the export.
     #[error("Exporting timed out after {} seconds", .0.as_secs())]
     ExportTimedOut(time::Duration),
+
+    /// already shutdown error
+    #[error("TracerProvider already shutdown")]
+    TracerProviderAlreadyShutdown,
 
     /// Other errors propagated from trace SDK that weren't covered above
     #[error(transparent)]
@@ -302,11 +317,24 @@ pub struct Link {
 }
 
 impl Link {
-    /// Create a new link.
-    pub fn new(span_context: SpanContext, attributes: Vec<KeyValue>) -> Self {
+    /// Create new `Link`
+    pub fn new(
+        span_context: SpanContext,
+        attributes: Vec<KeyValue>,
+        dropped_attributes_count: u32,
+    ) -> Self {
         Link {
             span_context,
             attributes,
+            dropped_attributes_count,
+        }
+    }
+
+    /// Create new `Link` with given context
+    pub fn with_context(span_context: SpanContext) -> Self {
+        Link {
+            span_context,
+            attributes: Vec::new(),
             dropped_attributes_count: 0,
         }
     }

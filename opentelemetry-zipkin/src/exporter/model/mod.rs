@@ -2,7 +2,7 @@ use opentelemetry::{
     trace::{SpanKind, Status},
     Key, KeyValue,
 };
-use opentelemetry_sdk::export::trace::SpanData;
+use opentelemetry_sdk::trace::SpanData;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
@@ -37,21 +37,23 @@ pub(crate) fn into_zipkin_span(local_endpoint: Endpoint, span_data: SpanData) ->
         span_data
             .attributes
             .into_iter()
-            .map(|kv| {
+            .inspect(|kv| {
                 if kv.key == Key::new("span.kind") {
                     user_defined_span_kind = true;
                 }
-                kv
             })
             .chain(
                 [
                     (
                         INSTRUMENTATION_LIBRARY_NAME,
-                        Some(span_data.instrumentation_lib.name),
+                        Some(span_data.instrumentation_scope.name().to_owned()),
                     ),
                     (
                         INSTRUMENTATION_LIBRARY_VERSION,
-                        span_data.instrumentation_lib.version,
+                        span_data
+                            .instrumentation_scope
+                            .version()
+                            .map(ToOwned::to_owned),
                     ),
                 ]
                 .into_iter()

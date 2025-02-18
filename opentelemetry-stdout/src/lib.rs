@@ -1,7 +1,15 @@
 //! Export telemetry signals to stdout.
-//! This exporter is designed for debugging and learning purposes. It is not
+//! <div class="warning">This exporter is designed for debugging and learning purposes. It is not
 //! recommended for use in production environments. The output format might not be
 //! exhaustive and is subject to change at any time.
+//! </div>
+//!
+//! # Feature Flags
+//! The following feature flags can enable exporters for different telemetry signals:
+//!
+//! * `trace`: Includes the trace exporters.
+//! * `metrics`: Includes the metrics exporters.
+//! * `logs`: Includes the logs exporters.
 //!
 //! # Examples
 //!
@@ -9,12 +17,11 @@
 //! # #[cfg(all(feature = "metrics", feature = "trace", feature = "logs"))]
 //! {
 //! use opentelemetry::metrics::MeterProvider;
-//! use opentelemetry::trace::{Span, Tracer, TracerProvider as _};
+//! use opentelemetry::trace::{Span, Tracer, TracerProvider};
 //! use opentelemetry::{Context, KeyValue};
 //!
 //! use opentelemetry_sdk::metrics::{SdkMeterProvider, PeriodicReader};
-//! use opentelemetry_sdk::runtime;
-//! use opentelemetry_sdk::trace::TracerProvider;
+//! use opentelemetry_sdk::trace::SdkTracerProvider;
 //!
 //! use opentelemetry_sdk::logs::LoggerProvider;
 //!
@@ -26,9 +33,8 @@
 //! }
 //!
 //! fn init_metrics() -> SdkMeterProvider {
-//!     let exporter = opentelemetry_stdout::MetricsExporter::default();
-//!     let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
-//!     SdkMeterProvider::builder().with_reader(reader).build()
+//!     let exporter = opentelemetry_stdout::MetricExporter::default();
+//!     SdkMeterProvider::builder().with_periodic_exporter(exporter).build()
 //! }
 //!
 //! fn init_logs() -> LoggerProvider {
@@ -44,14 +50,14 @@
 //!
 //! // recorded traces, metrics and logs will now be sent to stdout:
 //!
-//! // {"resourceMetrics":{"resource":{"attributes":[{"key":"service.name","value":{"str..
-//! // {"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stri..
-//! // {"resourceLogs": [{"resource": {"attributes": [{"key": "service.name", "value": {"str..
 //! # }
 //! ```
 #![warn(missing_debug_implementations, missing_docs)]
-
-pub(crate) mod common;
+#![cfg_attr(
+    docsrs,
+    feature(doc_cfg, doc_auto_cfg),
+    deny(rustdoc::broken_intra_doc_links)
+)]
 
 #[cfg(feature = "metrics")]
 mod metrics;

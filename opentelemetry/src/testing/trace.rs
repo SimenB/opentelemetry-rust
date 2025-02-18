@@ -1,6 +1,6 @@
 use crate::{
-    trace::{Span, SpanContext, SpanId, Status, TraceId},
-    KeyValue,
+    trace::{Span, SpanContext, Status},
+    KeyValue, SpanId, TraceId,
 };
 use std::borrow::Cow;
 
@@ -30,6 +30,8 @@ impl Span for TestSpan {
         T: Into<Cow<'static, str>>,
     {
     }
+
+    fn add_link(&mut self, _span_context: SpanContext, _attributes: Vec<KeyValue>) {}
     fn end_with_timestamp(&mut self, _timestamp: std::time::SystemTime) {}
 }
 

@@ -5,28 +5,19 @@ use opentelemetry::{
     propagation::Extractor,
     trace::{Span, SpanKind, Tracer},
 };
-use opentelemetry_sdk::{
-    propagation::TraceContextPropagator, runtime::Tokio, trace::TracerProvider,
-};
-use opentelemetry_stdout::SpanExporterBuilder;
+use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::SdkTracerProvider};
+use opentelemetry_stdout::SpanExporter;
 use tonic::{transport::Server, Request, Response, Status};
 
-fn init_tracer() {
+fn init_tracer() -> SdkTracerProvider {
     global::set_text_map_propagator(TraceContextPropagator::new());
     // Install stdout exporter pipeline to be able to retrieve the collected spans.
-    let provider = TracerProvider::builder()
-        .with_batch_exporter(
-            SpanExporterBuilder::default()
-                .with_encoder(|writer, data| {
-                    serde_json::to_writer_pretty(writer, &data).unwrap();
-                    Ok(())
-                })
-                .build(),
-            Tokio,
-        )
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(SpanExporter::default())
         .build();
 
-    global::set_tracer_provider(provider);
+    global::set_tracer_provider(provider.clone());
+    provider
 }
 
 #[allow(clippy::derive_partial_eq_without_eq)] // tonic don't derive Eq for generated types. We shouldn't manually change it.
@@ -36,7 +27,7 @@ pub mod hello_world {
 
 struct MetadataMap<'a>(&'a tonic::metadata::MetadataMap);
 
-impl<'a> Extractor for MetadataMap<'a> {
+impl Extractor for MetadataMap<'_> {
     /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str, returns None
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).and_then(|metadata| metadata.to_str().ok())
@@ -90,7 +81,7 @@ impl Greeter for MyGreeter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    init_tracer();
+    let provider = init_tracer();
 
     let addr = "[::1]:50051".parse()?;
     let greeter = MyGreeter::default();
@@ -100,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         .serve(addr)
         .await?;
 
-    opentelemetry::global::shutdown_tracer_provider();
+    provider.shutdown()?;
 
     Ok(())
 }

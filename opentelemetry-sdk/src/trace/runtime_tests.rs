@@ -1,30 +1,34 @@
 // Note that all tests here should be marked as ignore so that it won't be picked up by default We
 // need to run those tests one by one as the GlobalTracerProvider is a shared object between
 // threads Use cargo test -- --ignored --test-threads=1 to run those tests.
-use crate::export::trace::{ExportResult, SpanExporter};
-#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
-use crate::runtime;
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use crate::runtime::RuntimeChannel;
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
+use crate::trace::SpanExporter;
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
+use crate::{error::OTelSdkResult, runtime};
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use futures_util::future::BoxFuture;
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use opentelemetry::global::*;
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use opentelemetry::trace::Tracer;
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use std::fmt::Debug;
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 use std::sync::Arc;
 
 #[derive(Debug)]
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 struct SpanCountExporter {
     span_count: Arc<AtomicUsize>,
 }
 
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 impl SpanExporter for SpanCountExporter {
-    fn export(
-        &mut self,
-        batch: Vec<crate::export::trace::SpanData>,
-    ) -> BoxFuture<'static, ExportResult> {
+    fn export(&mut self, batch: Vec<crate::trace::SpanData>) -> BoxFuture<'static, OTelSdkResult> {
         self.span_count.fetch_add(batch.len(), Ordering::SeqCst);
         Box::pin(async { Ok(()) })
     }
@@ -43,31 +47,38 @@ impl SpanCountExporter {
 fn build_batch_tracer_provider<R: RuntimeChannel>(
     exporter: SpanCountExporter,
     runtime: R,
-) -> crate::trace::TracerProvider {
-    use crate::trace::TracerProvider;
-    TracerProvider::builder()
-        .with_batch_exporter(exporter, runtime)
+) -> crate::trace::SdkTracerProvider {
+    use crate::trace::SdkTracerProvider;
+    let processor = crate::trace::span_processor_with_async_runtime::BatchSpanProcessor::builder(
+        exporter, runtime,
+    )
+    .build();
+    SdkTracerProvider::builder()
+        .with_span_processor(processor)
         .build()
 }
 
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
-fn build_simple_tracer_provider(exporter: SpanCountExporter) -> crate::trace::TracerProvider {
-    use crate::trace::TracerProvider;
-    TracerProvider::builder()
+fn build_simple_tracer_provider(exporter: SpanCountExporter) -> crate::trace::SdkTracerProvider {
+    use crate::trace::SdkTracerProvider;
+    SdkTracerProvider::builder()
         .with_simple_exporter(exporter)
         .build()
 }
 
 #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
-async fn test_set_provider_in_tokio<R: RuntimeChannel>(runtime: R) -> Arc<AtomicUsize> {
+async fn test_set_provider_in_tokio<R: RuntimeChannel>(
+    runtime: R,
+) -> (Arc<AtomicUsize>, crate::trace::SdkTracerProvider) {
     let exporter = SpanCountExporter::new();
     let span_count = exporter.span_count.clone();
-    let _ = set_tracer_provider(build_batch_tracer_provider(exporter, runtime));
+    let tracer_provider = build_batch_tracer_provider(exporter, runtime);
+    let _ = set_tracer_provider(tracer_provider.clone());
     let tracer = tracer("opentelemetery");
 
     tracer.in_span("test", |_cx| {});
 
-    span_count
+    (span_count, tracer_provider)
 }
 
 // When using `tokio::spawn` to spawn the worker task in batch processor
@@ -90,7 +101,7 @@ async fn test_set_provider_in_tokio<R: RuntimeChannel>(runtime: R) -> Arc<Atomic
 #[ignore = "requires --test-threads=1"]
 #[cfg(feature = "rt-tokio")]
 async fn test_set_provider_multiple_thread_tokio() {
-    let span_count = test_set_provider_in_tokio(runtime::Tokio).await;
+    let (span_count, _) = test_set_provider_in_tokio(runtime::Tokio).await;
     assert_eq!(span_count.load(Ordering::SeqCst), 0);
 }
 
@@ -99,8 +110,10 @@ async fn test_set_provider_multiple_thread_tokio() {
 #[ignore = "requires --test-threads=1"]
 #[cfg(feature = "rt-tokio")]
 async fn test_set_provider_multiple_thread_tokio_shutdown() {
-    let span_count = test_set_provider_in_tokio(runtime::Tokio).await;
-    shutdown_tracer_provider();
+    let (span_count, tracer_provider) = test_set_provider_in_tokio(runtime::Tokio).await;
+    tracer_provider
+        .shutdown()
+        .expect("TracerProvider should shutdown properly");
     assert!(span_count.load(Ordering::SeqCst) > 0);
 }
 
@@ -112,12 +125,15 @@ async fn test_set_provider_multiple_thread_tokio_shutdown() {
 async fn test_set_provider_single_thread_tokio_with_simple_processor() {
     let exporter = SpanCountExporter::new();
     let span_count = exporter.span_count.clone();
-    let _ = set_tracer_provider(build_simple_tracer_provider(exporter));
+    let tracer_provider = build_simple_tracer_provider(exporter);
+    let _ = set_tracer_provider(tracer_provider.clone());
     let tracer = tracer("opentelemetry");
 
     tracer.in_span("test", |_cx| {});
 
-    shutdown_tracer_provider();
+    tracer_provider
+        .shutdown()
+        .expect("TracerProvider should shutdown properly");
 
     assert!(span_count.load(Ordering::SeqCst) > 0);
 }
@@ -127,7 +143,7 @@ async fn test_set_provider_single_thread_tokio_with_simple_processor() {
 #[ignore = "requires --test-threads=1"]
 #[cfg(feature = "rt-tokio-current-thread")]
 async fn test_set_provider_single_thread_tokio() {
-    let span_count = test_set_provider_in_tokio(runtime::TokioCurrentThread).await;
+    let (span_count, _) = test_set_provider_in_tokio(runtime::TokioCurrentThread).await;
     assert_eq!(span_count.load(Ordering::SeqCst), 0)
 }
 
@@ -136,7 +152,10 @@ async fn test_set_provider_single_thread_tokio() {
 #[ignore = "requires --test-threads=1"]
 #[cfg(feature = "rt-tokio-current-thread")]
 async fn test_set_provider_single_thread_tokio_shutdown() {
-    let span_count = test_set_provider_in_tokio(runtime::TokioCurrentThread).await;
-    shutdown_tracer_provider();
+    let (span_count, tracer_provider) =
+        test_set_provider_in_tokio(runtime::TokioCurrentThread).await;
+    tracer_provider
+        .shutdown()
+        .expect("TracerProvider should shutdown properly");
     assert!(span_count.load(Ordering::SeqCst) > 0)
 }

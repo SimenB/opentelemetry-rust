@@ -20,28 +20,29 @@ body:
   - type: textarea
     id: api-version
     attributes:
-      label: API Version
-      description: What version of the OpenTelemetry API are you using?
+      label: OpenTelemetry API Version (i.e version of `opentelemetry` crate)
+      description: What version of the `opentelemetry` crate are you using?
       placeholder: 0.x, 1.x, etc.
     validations:
       required: true
   - type: textarea
     id: sdk-version
     attributes:
-      label: SDK Version
-      description: What version of the OpenTelemetry SDK are you using?
+      label: label: OpenTelemetry SDK Version (i.e version of `opentelemetry_sdk` crate)
+      description: What version of the `opentelemetry_sdk` crate are you using?
       placeholder: 0.x, 1.x, etc.
     validations:
       required: true
   - type: dropdown
     id: browsers
     attributes:
-      label: What Exporters are you seeing the problem on?
+      label: What Exporter(s) are you seeing the problem on?
       multiple: true
       options:
+        - stdout
         - OTLP
         - Zipkin
-        - Jaeger (Deprecated)
+        - Prometheus
         - N/A
   - type: textarea
     id: logs

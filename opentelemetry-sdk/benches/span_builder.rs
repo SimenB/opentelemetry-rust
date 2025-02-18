@@ -4,9 +4,10 @@ use opentelemetry::{
     trace::{Span, Tracer, TracerProvider},
     KeyValue,
 };
+use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::{
-    export::trace::{ExportResult, SpanData, SpanExporter},
     trace as sdktrace,
+    trace::{SpanData, SpanExporter},
 };
 #[cfg(not(target_os = "windows"))]
 use pprof::criterion::{Output, PProfProfiler};
@@ -52,9 +53,9 @@ fn span_builder_benchmark_group(c: &mut Criterion) {
     group.finish();
 }
 
-fn not_sampled_provider() -> (sdktrace::TracerProvider, sdktrace::Tracer) {
-    let provider = sdktrace::TracerProvider::builder()
-        .with_config(sdktrace::config().with_sampler(sdktrace::Sampler::AlwaysOff))
+fn not_sampled_provider() -> (sdktrace::SdkTracerProvider, sdktrace::SdkTracer) {
+    let provider = sdktrace::SdkTracerProvider::builder()
+        .with_sampler(sdktrace::Sampler::AlwaysOff)
         .with_simple_exporter(NoopExporter)
         .build();
     let tracer = provider.tracer("not-sampled");
@@ -65,7 +66,7 @@ fn not_sampled_provider() -> (sdktrace::TracerProvider, sdktrace::Tracer) {
 struct NoopExporter;
 
 impl SpanExporter for NoopExporter {
-    fn export(&mut self, _spans: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
+    fn export(&mut self, _spans: Vec<SpanData>) -> BoxFuture<'static, OTelSdkResult> {
         Box::pin(futures_util::future::ready(Ok(())))
     }
 }

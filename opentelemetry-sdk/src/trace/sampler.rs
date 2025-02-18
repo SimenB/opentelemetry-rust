@@ -4,7 +4,6 @@ use opentelemetry::{
     },
     Context, KeyValue,
 };
-use std::convert::TryInto;
 
 #[cfg(feature = "jaeger_remote_sampler")]
 mod jaeger_remote;
@@ -58,7 +57,7 @@ use opentelemetry_http::HttpClient;
 /// [OpenTelemetry SDK]: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/sdk.md#sampling
 /// [`SpanContext`]: opentelemetry::trace::SpanContext
 /// [`SpanContext::trace_flags()`]: opentelemetry::trace::SpanContext#method.trace_flags
-/// [`SpanExporter`]: crate::export::trace::SpanExporter
+/// [`SpanExporter`]: crate::trace::SpanExporter
 /// [`SpanProcessor`]: crate::trace::SpanProcessor
 /// [`Span`]: opentelemetry::trace::Span
 /// [`Span::is_recording()`]: opentelemetry::trace::Span#tymethod.is_recording
@@ -250,8 +249,7 @@ pub(crate) fn sample_based_on_probability(prob: &f64, trace_id: TraceId) -> Samp
 mod tests {
     use super::*;
     use crate::testing::trace::TestSpan;
-    use crate::trace::{Sampler, ShouldSample};
-    use opentelemetry::trace::{SamplingDecision, SpanContext, SpanId, TraceFlags, TraceState};
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags};
     use rand::Rng;
 
     #[rustfmt::skip]

@@ -3,13 +3,13 @@
 //! The `B3Propagator` facilitates `SpanContext` propagation using
 //! B3 Headers. This propagator supports both version of B3 headers,
 //!  1. Single Header:
-//!    b3: {trace_id}-{span_id}-{sampling_state}-{parent_span_id}
+//!     b3: {trace_id}-{span_id}-{sampling_state}-{parent_span_id}
 //!  2. Multiple Headers:
-//!    X-B3-TraceId: {trace_id}
-//!    X-B3-ParentSpanId: {parent_span_id}
-//!    X-B3-SpanId: {span_id}
-//!    X-B3-Sampled: {sampling_state}
-//!    X-B3-Flags: {debug_flag}
+//!     X-B3-TraceId: {trace_id}
+//!     X-B3-ParentSpanId: {parent_span_id}
+//!     X-B3-SpanId: {span_id}
+//!     X-B3-Sampled: {sampling_state}
+//!     X-B3-Flags: {debug_flag}
 //!
 //! If `inject_encoding` is set to `B3Encoding::SingleHeader` then `b3` header is used to inject
 //! and extract. Otherwise, separate headers are used to inject and extract.
@@ -306,11 +306,7 @@ impl TextMapPropagator for Propagator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::{
-        propagation::TextMapPropagator,
-        testing::trace::TestSpan,
-        trace::{SpanContext, SpanId, TraceFlags, TraceId},
-    };
+    use opentelemetry::testing::trace::TestSpan;
     use std::collections::HashMap;
 
     const TRACE_ID_STR: &str = "4bf92f3577b34da6a3ce929d0e0e4736";

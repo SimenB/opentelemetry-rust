@@ -1,6 +1,5 @@
 use core::fmt;
 use std::{
-    borrow::Cow,
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -9,26 +8,38 @@ use std::{
 };
 
 use opentelemetry::{
-    metrics::{noop::NoopMeterCore, Meter, MeterProvider, MetricsError, Result},
-    KeyValue,
+    metrics::{Meter, MeterProvider},
+    otel_debug, otel_error, otel_info, InstrumentationScope,
 };
 
-use crate::{instrumentation::Scope, Resource};
+use crate::error::OTelSdkResult;
+use crate::Resource;
 
-use super::{meter::SdkMeter, pipeline::Pipelines, reader::MetricReader, view::View};
+use super::{
+    exporter::PushMetricExporter, meter::SdkMeter, noop::NoopMeter, pipeline::Pipelines,
+    reader::MetricReader, view::View, PeriodicReader,
+};
 
 /// Handles the creation and coordination of [Meter]s.
 ///
 /// All `Meter`s created by a `MeterProvider` will be associated with the same
 /// [Resource], have the same [View]s applied to them, and have their produced
-/// metric telemetry passed to the configured [MetricReader]s.
-///
+/// metric telemetry passed to the configured [MetricReader]s. This is a
+/// clonable handle to the MeterProvider implementation itself, and cloning it
+/// will create a new reference, not a new instance of a MeterProvider. Dropping
+/// the last reference to it will trigger shutdown of the provider. Shutdown can
+/// also be triggered manually by calling the `shutdown` method.
 /// [Meter]: opentelemetry::metrics::Meter
 #[derive(Clone, Debug)]
 pub struct SdkMeterProvider {
+    inner: Arc<SdkMeterProviderInner>,
+}
+
+#[derive(Debug)]
+struct SdkMeterProviderInner {
     pipes: Arc<Pipelines>,
-    meters: Arc<Mutex<HashMap<Scope, Arc<SdkMeter>>>>,
-    is_shutdown: Arc<AtomicBool>,
+    meters: Mutex<HashMap<InstrumentationScope, Arc<SdkMeter>>>,
+    shutdown_invoked: AtomicBool,
 }
 
 impl Default for SdkMeterProvider {
@@ -82,8 +93,8 @@ impl SdkMeterProvider {
     ///     Ok(())
     /// }
     /// ```
-    pub fn force_flush(&self) -> Result<()> {
-        self.pipes.force_flush()
+    pub fn force_flush(&self) -> OTelSdkResult {
+        self.inner.force_flush()
     }
 
     /// Shuts down the meter provider flushing all pending telemetry and releasing
@@ -98,45 +109,110 @@ impl SdkMeterProvider {
     ///
     /// There is no guaranteed that all telemetry be flushed or all resources have
     /// been released on error.
-    pub fn shutdown(&self) -> Result<()> {
+    pub fn shutdown(&self) -> OTelSdkResult {
+        otel_info!(
+            name: "MeterProvider.Shutdown",
+            message = "User initiated shutdown of MeterProvider."
+        );
+        self.inner.shutdown()
+    }
+}
+
+impl SdkMeterProviderInner {
+    fn force_flush(&self) -> OTelSdkResult {
         if self
-            .is_shutdown
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+            .shutdown_invoked
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.pipes.shutdown()
+            Err(crate::error::OTelSdkError::AlreadyShutdown)
         } else {
-            Err(MetricsError::Other(
-                "metrics provider already shut down".into(),
-            ))
+            self.pipes.force_flush()
+        }
+    }
+
+    fn shutdown(&self) -> OTelSdkResult {
+        if self
+            .shutdown_invoked
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            // If the previous value was true, shutdown was already invoked.
+            Err(crate::error::OTelSdkError::AlreadyShutdown)
+        } else {
+            self.pipes.shutdown()
+        }
+    }
+}
+
+impl Drop for SdkMeterProviderInner {
+    fn drop(&mut self) {
+        // If user has already shutdown the provider manually by calling
+        // shutdown(), then we don't need to call shutdown again.
+        if self.shutdown_invoked.load(Ordering::Relaxed) {
+            otel_debug!(
+                name: "MeterProvider.Drop.AlreadyShutdown",
+                message = "MeterProvider was already shut down; drop will not attempt shutdown again."
+            );
+        } else {
+            otel_info!(
+                name: "MeterProvider.Drop",
+                message = "Last reference of MeterProvider dropped, initiating shutdown."
+            );
+            if let Err(err) = self.shutdown() {
+                otel_error!(
+                    name: "MeterProvider.Drop.ShutdownFailed",
+                    message = "Shutdown attempt failed during drop of MeterProvider.",
+                    reason = format!("{}", err)
+                );
+            } else {
+                otel_info!(
+                    name: "MeterProvider.Drop.ShutdownCompleted",
+                );
+            }
         }
     }
 }
 
 impl MeterProvider for SdkMeterProvider {
-    fn versioned_meter(
-        &self,
-        name: impl Into<Cow<'static, str>>,
-        version: Option<impl Into<Cow<'static, str>>>,
-        schema_url: Option<impl Into<Cow<'static, str>>>,
-        attributes: Option<Vec<KeyValue>>,
-    ) -> Meter {
-        if self.is_shutdown.load(Ordering::Relaxed) {
-            return Meter::new(Arc::new(NoopMeterCore::new()));
+    fn meter(&self, name: &'static str) -> Meter {
+        let scope = InstrumentationScope::builder(name).build();
+        self.meter_with_scope(scope)
+    }
+
+    fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
+        if self.inner.shutdown_invoked.load(Ordering::Relaxed) {
+            otel_debug!(
+                name: "MeterProvider.NoOpMeterReturned",
+                meter_name = scope.name(),
+            );
+            return Meter::new(Arc::new(NoopMeter::new()));
         }
 
-        let scope = Scope::new(name, version, schema_url, attributes);
+        if scope.name().is_empty() {
+            otel_info!(name: "MeterNameEmpty", message = "Meter name is empty; consider providing a meaningful name. Meter will function normally and the provided name will be used as-is.");
+        };
 
-        if let Ok(mut meters) = self.meters.lock() {
-            let meter = meters
-                .entry(scope)
-                .or_insert_with_key(|scope| {
-                    Arc::new(SdkMeter::new(scope.clone(), self.pipes.clone()))
-                })
-                .clone();
-            Meter::new(meter)
+        if let Ok(mut meters) = self.inner.meters.lock() {
+            if let Some(existing_meter) = meters.get(&scope) {
+                otel_debug!(
+                    name: "MeterProvider.ExistingMeterReturned",
+                    meter_name = scope.name(),
+                );
+                Meter::new(existing_meter.clone())
+            } else {
+                let new_meter = Arc::new(SdkMeter::new(scope.clone(), self.inner.pipes.clone()));
+                meters.insert(scope.clone(), new_meter.clone());
+                otel_debug!(
+                    name: "MeterProvider.NewMeterCreated",
+                    meter_name = scope.name(),
+                );
+                Meter::new(new_meter)
+            }
         } else {
-            Meter::new(Arc::new(NoopMeterCore::new()))
+            otel_debug!(
+                name: "MeterProvider.NoOpMeterReturned",
+                meter_name = scope.name(),
+            );
+            Meter::new(Arc::new(NoopMeter::new()))
         }
     }
 }
@@ -164,14 +240,38 @@ impl MeterProviderBuilder {
     }
 
     /// Associates a [MetricReader] with a [MeterProvider].
+    /// [`MeterProviderBuilder::with_periodic_exporter()] can be used to add a PeriodicReader which is
+    /// the most common use case.
     ///
-    /// By default, if this option is not used, the [MeterProvider] will perform no
-    /// operations; no data will be exported without a [MetricReader].
+    /// A [MeterProvider] will export no metrics without [MetricReader]
+    /// added.
     pub fn with_reader<T: MetricReader>(mut self, reader: T) -> Self {
         self.readers.push(Box::new(reader));
         self
     }
 
+    /// Adds a [`PushMetricExporter`] to the [`MeterProvider`] and configures it
+    /// to export metrics at **fixed** intervals (60 seconds) using a
+    /// [`PeriodicReader`].
+    ///
+    /// To customize the export interval, set the
+    /// **"OTEL_METRIC_EXPORT_INTERVAL"** environment variable (in
+    /// milliseconds).
+    ///
+    /// Most users should use this method to attach an exporter. Advanced users
+    /// who need finer control over the export process can use
+    /// [`crate::metrics::PeriodicReaderBuilder`] to configure a custom reader and attach it
+    /// using [`MeterProviderBuilder::with_reader()`].
+    pub fn with_periodic_exporter<T>(mut self, exporter: T) -> Self
+    where
+        T: PushMetricExporter,
+    {
+        let reader = PeriodicReader::builder(exporter).build();
+        self.readers.push(Box::new(reader));
+        self
+    }
+
+    #[cfg(feature = "spec_unstable_metrics_views")]
     /// Associates a [View] with a [MeterProvider].
     ///
     /// [View]s are appended to existing ones in a [MeterProvider] if this option is
@@ -186,15 +286,27 @@ impl MeterProviderBuilder {
 
     /// Construct a new [MeterProvider] with this configuration.
     pub fn build(self) -> SdkMeterProvider {
-        SdkMeterProvider {
-            pipes: Arc::new(Pipelines::new(
-                self.resource.unwrap_or_default(),
-                self.readers,
-                self.views,
-            )),
-            meters: Default::default(),
-            is_shutdown: Arc::new(AtomicBool::new(false)),
-        }
+        otel_debug!(
+            name: "MeterProvider.Building",
+            builder = format!("{:?}", &self),
+        );
+
+        let meter_provider = SdkMeterProvider {
+            inner: Arc::new(SdkMeterProviderInner {
+                pipes: Arc::new(Pipelines::new(
+                    self.resource.unwrap_or(Resource::builder().build()),
+                    self.readers,
+                    self.views,
+                )),
+                meters: Default::default(),
+                shutdown_invoked: AtomicBool::new(false),
+            }),
+        };
+
+        otel_info!(
+            name: "MeterProvider.Built",
+        );
+        meter_provider
     }
 }
 
@@ -207,64 +319,98 @@ impl fmt::Debug for MeterProviderBuilder {
             .finish()
     }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "testing"))]
 mod tests {
+    use crate::error::OTelSdkError;
+    use crate::resource::{
+        SERVICE_NAME, TELEMETRY_SDK_LANGUAGE, TELEMETRY_SDK_NAME, TELEMETRY_SDK_VERSION,
+    };
     use crate::testing::metrics::metric_reader::TestMetricReader;
     use crate::Resource;
-    use opentelemetry::Key;
-    use opentelemetry::KeyValue;
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry::{global, InstrumentationScope};
+    use opentelemetry::{Key, KeyValue, Value};
     use std::env;
 
     #[test]
     fn test_meter_provider_resource() {
-        // If users didn't provide a resource and there isn't a env var set. Use default one.
-        let assert_service_name = |provider: super::SdkMeterProvider,
-                                   expect: Option<&'static str>| {
+        let assert_resource = |provider: &super::SdkMeterProvider,
+                               resource_key: &'static str,
+                               expect: Option<&'static str>| {
             assert_eq!(
-                provider.pipes.0[0]
+                provider.inner.pipes.0[0]
                     .resource
-                    .get(Key::from_static_str("service.name"))
+                    .get(&Key::from_static_str(resource_key))
                     .map(|v| v.to_string()),
                 expect.map(|s| s.to_string())
             );
         };
-        let reader = TestMetricReader {};
-        let default_meter_provider = super::SdkMeterProvider::builder()
-            .with_reader(reader)
-            .build();
-        assert_service_name(default_meter_provider, Some("unknown_service"));
+        let assert_telemetry_resource = |provider: &super::SdkMeterProvider| {
+            assert_eq!(
+                provider.inner.pipes.0[0]
+                    .resource
+                    .get(&TELEMETRY_SDK_LANGUAGE.into()),
+                Some(Value::from("rust"))
+            );
+            assert_eq!(
+                provider.inner.pipes.0[0]
+                    .resource
+                    .get(&TELEMETRY_SDK_NAME.into()),
+                Some(Value::from("opentelemetry"))
+            );
+            assert_eq!(
+                provider.inner.pipes.0[0]
+                    .resource
+                    .get(&TELEMETRY_SDK_VERSION.into()),
+                Some(Value::from(env!("CARGO_PKG_VERSION")))
+            );
+        };
+
+        // If users didn't provide a resource and there isn't a env var set. Use default one.
+        temp_env::with_var_unset("OTEL_RESOURCE_ATTRIBUTES", || {
+            let reader = TestMetricReader::new();
+            let default_meter_provider = super::SdkMeterProvider::builder()
+                .with_reader(reader)
+                .build();
+            assert_resource(
+                &default_meter_provider,
+                SERVICE_NAME,
+                Some("unknown_service"),
+            );
+            assert_telemetry_resource(&default_meter_provider);
+        });
 
         // If user provided a resource, use that.
-        let reader2 = TestMetricReader {};
+        let reader2 = TestMetricReader::new();
         let custom_meter_provider = super::SdkMeterProvider::builder()
             .with_reader(reader2)
-            .with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                "test_service",
-            )]))
+            .with_resource(
+                Resource::builder_empty()
+                    .with_service_name("test_service")
+                    .build(),
+            )
             .build();
-        assert_service_name(custom_meter_provider, Some("test_service"));
+        assert_resource(&custom_meter_provider, SERVICE_NAME, Some("test_service"));
+        assert_eq!(custom_meter_provider.inner.pipes.0[0].resource.len(), 1);
 
         temp_env::with_var(
             "OTEL_RESOURCE_ATTRIBUTES",
             Some("key1=value1, k2, k3=value2"),
             || {
                 // If `OTEL_RESOURCE_ATTRIBUTES` is set, read them automatically
-                let reader3 = TestMetricReader {};
+                let reader3 = TestMetricReader::new();
                 let env_resource_provider = super::SdkMeterProvider::builder()
                     .with_reader(reader3)
                     .build();
-                assert_eq!(
-                    env_resource_provider.pipes.0[0].resource,
-                    Resource::new(vec![
-                        KeyValue::new("telemetry.sdk.name", "opentelemetry"),
-                        KeyValue::new("telemetry.sdk.version", env!("CARGO_PKG_VERSION")),
-                        KeyValue::new("telemetry.sdk.language", "rust"),
-                        KeyValue::new("key1", "value1"),
-                        KeyValue::new("k3", "value2"),
-                        KeyValue::new("service.name", "unknown_service"),
-                    ])
+                assert_resource(
+                    &env_resource_provider,
+                    SERVICE_NAME,
+                    Some("unknown_service"),
                 );
+                assert_resource(&env_resource_provider, "key1", Some("value1"));
+                assert_resource(&env_resource_provider, "k3", Some("value2"));
+                assert_telemetry_resource(&env_resource_provider);
+                assert_eq!(env_resource_provider.inner.pipes.0[0].resource.len(), 6);
             },
         );
 
@@ -273,34 +419,138 @@ mod tests {
             "OTEL_RESOURCE_ATTRIBUTES",
             Some("my-custom-key=env-val,k2=value2"),
             || {
-                let reader4 = TestMetricReader {};
+                let reader4 = TestMetricReader::new();
                 let user_provided_resource_config_provider = super::SdkMeterProvider::builder()
                     .with_reader(reader4)
-                    .with_resource(Resource::default().merge(&mut Resource::new(vec![
-                        KeyValue::new("my-custom-key", "my-custom-value"),
-                    ])))
+                    .with_resource(
+                        Resource::builder()
+                            .with_attributes([
+                                KeyValue::new("my-custom-key", "my-custom-value"),
+                                KeyValue::new("my-custom-key2", "my-custom-value2"),
+                            ])
+                            .build(),
+                    )
                     .build();
+                assert_resource(
+                    &user_provided_resource_config_provider,
+                    SERVICE_NAME,
+                    Some("unknown_service"),
+                );
+                assert_resource(
+                    &user_provided_resource_config_provider,
+                    "my-custom-key",
+                    Some("my-custom-value"),
+                );
+                assert_resource(
+                    &user_provided_resource_config_provider,
+                    "my-custom-key2",
+                    Some("my-custom-value2"),
+                );
+                assert_resource(
+                    &user_provided_resource_config_provider,
+                    "k2",
+                    Some("value2"),
+                );
+                assert_telemetry_resource(&user_provided_resource_config_provider);
                 assert_eq!(
-                    user_provided_resource_config_provider.pipes.0[0].resource,
-                    Resource::new(vec![
-                        KeyValue::new("telemetry.sdk.name", "opentelemetry"),
-                        KeyValue::new("telemetry.sdk.version", env!("CARGO_PKG_VERSION")),
-                        KeyValue::new("telemetry.sdk.language", "rust"),
-                        KeyValue::new("my-custom-key", "my-custom-value"),
-                        KeyValue::new("k2", "value2"),
-                        KeyValue::new("service.name", "unknown_service"),
-                    ])
+                    user_provided_resource_config_provider.inner.pipes.0[0]
+                        .resource
+                        .len(),
+                    7
                 );
             },
         );
 
         // If user provided a resource, it takes priority during collision.
-        let reader5 = TestMetricReader {};
+        let reader5 = TestMetricReader::new();
         let no_service_name = super::SdkMeterProvider::builder()
             .with_reader(reader5)
             .with_resource(Resource::empty())
             .build();
 
-        assert_service_name(no_service_name, None);
+        assert_eq!(no_service_name.inner.pipes.0[0].resource.len(), 0)
+    }
+
+    #[test]
+    fn test_meter_provider_shutdown() {
+        let reader = TestMetricReader::new();
+        let provider = super::SdkMeterProvider::builder()
+            .with_reader(reader.clone())
+            .build();
+        global::set_meter_provider(provider.clone());
+        assert!(!reader.is_shutdown());
+        // create a meter and an instrument
+        let meter = global::meter("test");
+        let counter = meter.u64_counter("test_counter").build();
+        // no need to drop a meter for meter_provider shutdown
+        let shutdown_res = provider.shutdown();
+        assert!(shutdown_res.is_ok());
+
+        // shutdown once more should return an error
+        let shutdown_res = provider.shutdown();
+        assert!(matches!(shutdown_res, Err(OTelSdkError::AlreadyShutdown)));
+
+        assert!(shutdown_res.is_err());
+        assert!(reader.is_shutdown());
+        // TODO Fix: the instrument is still available, and can be used.
+        // While the reader is shutdown, and no collect is happening
+        counter.add(1, &[]);
+    }
+    #[test]
+    fn test_shutdown_invoked_on_last_drop() {
+        let reader = TestMetricReader::new();
+        let provider = super::SdkMeterProvider::builder()
+            .with_reader(reader.clone())
+            .build();
+        let clone1 = provider.clone();
+        let clone2 = provider.clone();
+
+        // Initially, shutdown should not be called
+        assert!(!reader.is_shutdown());
+
+        // Drop the first clone
+        drop(clone1);
+        assert!(!reader.is_shutdown());
+
+        // Drop the second clone
+        drop(clone2);
+        assert!(!reader.is_shutdown());
+
+        // Drop the last original provider
+        drop(provider);
+        // Now the shutdown should be invoked
+        assert!(reader.is_shutdown());
+    }
+
+    #[test]
+    fn same_meter_reused_same_scope() {
+        let provider = super::SdkMeterProvider::builder().build();
+        let _meter1 = provider.meter("test");
+        let _meter2 = provider.meter("test");
+        assert_eq!(provider.inner.meters.lock().unwrap().len(), 1);
+
+        let scope = InstrumentationScope::builder("test")
+            .with_version("1.0.0")
+            .with_schema_url("http://example.com")
+            .build();
+
+        let _meter3 = provider.meter_with_scope(scope.clone());
+        let _meter4 = provider.meter_with_scope(scope.clone());
+        let _meter5 = provider.meter_with_scope(scope);
+        assert_eq!(provider.inner.meters.lock().unwrap().len(), 2);
+
+        // these are different meters because meter names are case sensitive
+        let make_scope = |name| {
+            InstrumentationScope::builder(name)
+                .with_version("1.0.0")
+                .with_schema_url("http://example.com")
+                .build()
+        };
+
+        let _meter6 = provider.meter_with_scope(make_scope("ABC"));
+        let _meter7 = provider.meter_with_scope(make_scope("Abc"));
+        let _meter8 = provider.meter_with_scope(make_scope("abc"));
+
+        assert_eq!(provider.inner.meters.lock().unwrap().len(), 5);
     }
 }

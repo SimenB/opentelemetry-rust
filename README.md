@@ -1,7 +1,3 @@
-![OpenTelemetry — An observability framework for cloud-native software.][splash]
-
-[splash]: https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/main/assets/logo-text.png
-
 # OpenTelemetry Rust
 
 The Rust [OpenTelemetry](https://opentelemetry.io/) implementation.
@@ -13,10 +9,6 @@ The Rust [OpenTelemetry](https://opentelemetry.io/) implementation.
 [![codecov](https://codecov.io/gh/open-telemetry/opentelemetry-rust/branch/main/graph/badge.svg)](https://codecov.io/gh/open-telemetry/opentelemetry-rust)
 [![Slack](https://img.shields.io/badge/slack-@cncf/otel/rust-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C03GDP0H023)
 
-[Website](https://opentelemetry.io/) |
-[Slack](https://cloud-native.slack.com/archives/C03GDP0H023) |
-[Documentation](https://docs.rs/opentelemetry)
-
 ## Overview
 
 OpenTelemetry is a collection of tools, APIs, and SDKs used to instrument,
@@ -25,149 +17,131 @@ analysis in order to understand your software's performance and behavior. You
 can export and analyze them using [Prometheus], [Jaeger], and other
 observability tools.
 
-*Compiler support: [requires `rustc` 1.65+][msrv]*
+*[Supported Rust Versions](#supported-rust-versions)*
 
 [Prometheus]: https://prometheus.io
 [Jaeger]: https://www.jaegertracing.io
-[msrv]: #supported-rust-versions
 
 ## Project Status
 
-| Signal  | Status     |
-| ------- | ---------- |
-| Logs    | Alpha*     |
-| Metrics | Alpha      |
-| Traces  | Beta       |
+The table below summarizes the overall status of each component. Some components
+include unstable features, which are documented in their respective crate
+documentation.
+
+| Signal/Component      | Overall Status     |
+| --------------------  | ------------------ |
+| Logs-API              | Stable*            |
+| Logs-SDK              | RC                 |
+| Logs-OTLP Exporter    | RC                 |
+| Logs-Appender-Tracing | RC                 |
+| Metrics-API           | Stable             |
+| Metrics-SDK           | RC                 |
+| Metrics-OTLP Exporter | RC                 |
+| Traces-API            | Beta               |
+| Traces-SDK            | Beta               |
+| Traces-OTLP Exporter  | Beta               |
 
 *OpenTelemetry Rust is not introducing a new end user callable Logging API.
 Instead, it provides [Logs Bridge
-API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/bridge-api.md),
+API](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/api.md),
 that allows one to write log appenders that can bridge existing logging
 libraries to the OpenTelemetry log data model. The following log appenders are
 available:
 
 * [opentelemetry-appender-log](opentelemetry-appender-log/README.md)
 * [opentelemetry-appender-tracing](opentelemetry-appender-tracing/README.md)
-* opentelemetry-appender-slog // TODO: Add link once available
 
 If you already use the logging APIs from above, continue to use them, and use
 the appenders above to bridge the logs to OpenTelemetry. If you are using a
 library not listed here, feel free to contribute a new appender for the same.
 
-If you are starting fresh, then consider using
+If you are starting fresh, we recommend using
 [tracing](https://github.com/tokio-rs/tracing) as your logging API. It supports
-structured logging and is actively maintained.
+structured logging and is actively maintained. `OpenTelemetry` itself uses
+`tracing` for its internal logging.
 
 Project versioning information and stability guarantees can be found
 [here](VERSIONING.md).
 
 ## Getting Started
 
-```rust
-use opentelemetry::{
-    global,
-    sdk::trace::TracerProvider,
-    trace::{Tracer, TracerProvider as _},
-};
+If you are new to OpenTelemetry, start with the [Stdout
+Example](./opentelemetry-stdout/examples/basic.rs). This example demonstrates
+how to use OpenTelemetry for logs, metrics, and traces, and display
+telemetry data on your console.
 
-fn main() {
-    // Create a new trace pipeline that prints to stdout
-    let provider = TracerProvider::builder()
-        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
-        .build();
-    let tracer = provider.tracer("readme_example");
+For those using OTLP, the recommended OpenTelemetry Exporter for production
+scenarios, refer to the [OTLP Example -
+HTTP](./opentelemetry-otlp/examples/basic-otlp-http/README.md) and the [OTLP
+Example - gRPC](./opentelemetry-otlp/examples/basic-otlp/README.md).
 
-    tracer.in_span("doing_work", |cx| {
-        // Traced app logic here...
-    });
+Additional examples for various integration patterns can be found in the
+[examples](./examples) directory.
 
-    // Shutdown trace pipeline
-    global::shutdown_tracer_provider();
-}
-```
+## Overview of crates
 
-See the [examples](./examples) directory for different integration patterns.
+The following crates are maintained in this repo:
 
-## Ecosystem
-
-### Related Crates
-
-In addition to `opentelemetry`, the [`open-telemetry/opentelemetry-rust`]
-repository contains several additional crates designed to be used with the
-`opentelemetry` ecosystem. This includes a collection of trace `SpanExporter`
-and metrics pull and push controller implementations, as well as utility and
-adapter crates to assist in propagating state and instrumenting applications.
-
-In particular, the following crates are likely to be of interest:
-
-* [`opentelemetry-aws`] provides unofficial propagators for AWS X-ray.
-* [`opentelemetry-datadog`] provides additional exporters to [`Datadog`].
-* [`opentelemetry-dynatrace`] provides additional exporters to Dynatrace.
-* [`opentelemetry-contrib`] provides additional exporters and propagators that
-  are experimental.
-* [`opentelemetry-http`] provides an interface for injecting and extracting
-  trace information from [`http`] headers.
-* [`opentelemetry-jaeger`] provides context propagation using [jaeger propagation format](https://www.jaegertracing.io/docs/1.18/client-libraries/#propagation-format).
-* [`opentelemetry-otlp`] exporter for sending trace and metric data in the OTLP
-  format to the OpenTelemetry collector.
+* [`opentelemetry`] This is the OpenTelemetry API crate, and is the crate
+  required to instrument libraries and applications. It contains Context API,
+  Baggage API, Propagators API, Logging Bridge API, Metrics API, and Tracing
+  API.
+* [`opentelemetry-sdk`] This is the OpenTelemetry SDK crate, and contains the
+  official OpenTelemetry SDK implementation. It contains Logging SDK, Metrics
+  SDK, and Tracing SDK. It also contains propagator implementations.
+* [`opentelemetry-otlp`] - exporter to send telemetry (logs, metrics and traces)
+  in the [OTLP
+  format](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/protocol)
+  to an endpoint accepting OTLP. This could be the [OTel
+  Collector](https://github.com/open-telemetry/opentelemetry-collector),
+  telemetry backends like [Jaeger](https://www.jaegertracing.io/),
+  [Prometheus](https://prometheus.io/docs/prometheus/latest/feature_flags/#otlp-receiver)
+  or [vendor specific endpoints](https://opentelemetry.io/ecosystem/vendors/).
+* [`opentelemetry-stdout`] exporter for sending logs, metrics and traces to
+  stdout, for learning/debugging purposes.  
+* [`opentelemetry-http`] This crate contains utility functions to help with
+  exporting telemetry, propagation, over [`http`].
+* [`opentelemetry-appender-log`] This crate provides logging appender to route
+  logs emitted using the [log](https://docs.rs/log/latest/log/) crate to
+  opentelemetry.
+* [`opentelemetry-appender-tracing`] This crate provides logging appender to
+  route logs emitted using the [tracing](https://crates.io/crates/tracing) crate
+  to opentelemetry.  
+* [`opentelemetry-jaeger-propagator`] provides context propagation using [jaeger
+  propagation
+  format](https://www.jaegertracing.io/docs/1.18/client-libraries/#propagation-format).
 * [`opentelemetry-prometheus`] provides a pipeline and exporter for sending
-  metrics information to [`Prometheus`].
+  metrics to [`Prometheus`].
 * [`opentelemetry-semantic-conventions`] provides standard names and semantic
   otel conventions.
-* [`opentelemetry-stackdriver`] provides an exporter for Google's [Cloud Trace]
-  (which used to be called StackDriver).
-* [`opentelemetry-zipkin`] provides a pipeline and exporter for sending trace
-  information to [`Zipkin`].
+* [`opentelemetry-zipkin`] provides a pipeline and exporter for sending traces
+  to [`Zipkin`].
 
-Additionally, there are also several third-party crates which are not
-maintained by the `opentelemetry` project. These include:
+In addition, there are several other useful crates in the [OTel Rust Contrib
+repo](https://github.com/open-telemetry/opentelemetry-rust-contrib). A lot of
+crates maintained outside OpenTelemetry owned repos can be found in the
+[OpenTelemetry
+Registry](https://opentelemetry.io/ecosystem/registry/?language=rust).
 
-* [`tracing-opentelemetry`] provides integration for applications instrumented
-  using the [`tracing`] API and ecosystem.
-* [`actix-web-opentelemetry`] provides integration for the [`actix-web`] web
-  server and ecosystem.
-* [`opentelemetry-application-insights`] provides an unofficial [Azure
-  Application Insights] exporter.
-* [`opentelemetry-tide`] provides integration for the [`Tide`] web server and
-  ecosystem.
-* [`trillium-opentelemetry`] provides metrics instrumentation for [`trillium`] http servers following [semantic-conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/http/http-metrics.md).
-
-If you're the maintainer of an `opentelemetry` ecosystem crate not listed
-above, please let us know! We'd love to add your project to the list!
-
-[`open-telemetry/opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
-[`opentelemetry-jaeger`]: https://crates.io/crates/opentelemetry-jaeger
-[`opentelemetry-otlp`]: https://crates.io/crates/opentelemetry-otlp
+[`opentelemetry`]: https://crates.io/crates/opentelemetry
+[`opentelemetry-sdk`]: https://crates.io/crates/opentelemetry-sdk
+[`opentelemetry-appender-log`]: https://crates.io/crates/opentelemetry-appender-log
+[`opentelemetry-appender-tracing`]: https://crates.io/crates/opentelemetry-appender-tracing
 [`opentelemetry-http`]: https://crates.io/crates/opentelemetry-http
+[`opentelemetry-otlp`]: https://crates.io/crates/opentelemetry-otlp
+[`opentelemetry-stdout`]: https://crates.io/crates/opentelemetry-stdout
+[`opentelemetry-jaeger-propagator`]: https://crates.io/crates/opentelemetry-jaeger-propagator
 [`opentelemetry-prometheus`]: https://crates.io/crates/opentelemetry-prometheus
-[`opentelemetry-aws`]: https://crates.io/crates/opentelemetry-aws
 [`Prometheus`]: https://prometheus.io
 [`opentelemetry-zipkin`]: https://crates.io/crates/opentelemetry-zipkin
 [`Zipkin`]: https://zipkin.io
-[`opentelemetry-contrib`]: https://crates.io/crates/opentelemetry-contrib
-[`Datadog`]: https://www.datadoghq.com
-[`opentelemetry-datadog`]: https://crates.io/crates/opentelemetry-datadog
-[`opentelemetry-dynatrace`]: https://crates.io/crates/opentelemetry-dynatrace
 [`opentelemetry-semantic-conventions`]: https://crates.io/crates/opentelemetry-semantic-conventions
 [`http`]: https://crates.io/crates/http
-
-[`tracing-opentelemetry`]: https://crates.io/crates/tracing-opentelemetry
-[`tracing`]: https://crates.io/crates/tracing
-[`actix-web-opentelemetry`]: https://crates.io/crates/actix-web-opentelemetry
-[`actix-web`]: https://crates.io/crates/actix-web
-[`opentelemetry-application-insights`]: https://crates.io/crates/opentelemetry-application-insights
-[Azure Application Insights]: https://docs.microsoft.com/azure/azure-monitor/app/app-insights-overview
-[`opentelemetry-tide`]: https://crates.io/crates/opentelemetry-tide
-[`Tide`]: https://crates.io/crates/tide
-[`opentelemetry-stackdriver`]: https://crates.io/crates/opentelemetry-stackdriver
-[Cloud Trace]: https://cloud.google.com/trace/
-[`trillium-opentelemetry`]: https://github.com/trillium-rs/trillium-opentelemetry
-[`trillium`]: https://github.com/trillium-rs/trillium
 
 ## Supported Rust Versions
 
 OpenTelemetry is built against the latest stable release. The minimum supported
-version is 1.64. The current OpenTelemetry version is not guaranteed to build
+version is 1.75. The current OpenTelemetry version is not guaranteed to build
 on Rust versions earlier than the minimum supported version.
 
 The current stable Rust compiler and the three most recent minor versions
@@ -182,14 +156,14 @@ this policy.
 See the [contributing file](CONTRIBUTING.md).
 
 The Rust special interest group (SIG) meets weekly on Tuesdays at 9 AM Pacific
-Time. The meeting is subject to change depending on contributors'
-availability. Check the [OpenTelemetry community
-calendar](https://calendar.google.com/calendar/embed?src=google.com_b79e3e90j7bbsa2n2p5an5lf60%40group.calendar.google.com)
+Time. The meeting is subject to change depending on contributors' availability.
+Check the [OpenTelemetry community
+calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calendar)
 for specific dates and for Zoom meeting links. "OTel Rust SIG" is the name of
 meeting for this group.
 
 Meeting notes are available as a public [Google
-doc](https://docs.google.com/document/d/1tGKuCsSnyT2McDncVJrMgg74_z8V06riWZa0Sr79I_4/edit).
+doc](https://docs.google.com/document/d/12upOzNk8c3SFTjsL6IRohCWMgzLKoknSCOOdMakbWo4/edit).
 If you have trouble accessing the doc, please get in touch on
 [Slack](https://cloud-native.slack.com/archives/C03GDP0H023).
 
@@ -197,3 +171,29 @@ The meeting is open for all to join. We invite everyone to join our meeting,
 regardless of your experience level. Whether you're a seasoned OpenTelemetry
 developer, just starting your journey, or simply curious about the work we do,
 you're more than welcome to participate!
+
+## Approvers and Maintainers
+
+### Maintainers
+
+* [Cijo Thomas](https://github.com/cijothomas)
+* [Harold Dost](https://github.com/hdost)
+* [Julian Tescher](https://github.com/jtescher)
+* [Lalit Kumar Bhasin](https://github.com/lalitb)
+* [Utkarsh Umesan Pillai](https://github.com/utpilla)
+* [Zhongyang Wu](https://github.com/TommyCpp)
+
+### Approvers
+
+* [Shaun Cox](https://github.com/shaun-cox)
+
+### Emeritus
+
+* [Dirkjan Ochtman](https://github.com/djc)
+* [Jan Kühle](https://github.com/frigus02)
+* [Isobel Redelmeier](https://github.com/iredelmeier)
+* [Mike Goldsmith](https://github.com/MikeGoldsmith)
+
+### Thanks to all the people who have contributed
+
+[![contributors](https://contributors-img.web.app/image?repo=open-telemetry/opentelemetry-rust)](https://github.com/open-telemetry/opentelemetry-rust/graphs/contributors)

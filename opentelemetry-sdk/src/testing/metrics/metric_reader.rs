@@ -1,41 +1,57 @@
-use std::sync::Weak;
+use std::sync::{Arc, Mutex, Weak};
 
+use crate::error::{OTelSdkError, OTelSdkResult};
 use crate::metrics::{
-    aggregation::Aggregation,
-    data::{ResourceMetrics, Temporality},
-    instrument::InstrumentKind,
-    pipeline::Pipeline,
-    reader::{AggregationSelector, MetricReader, TemporalitySelector},
+    data::ResourceMetrics, pipeline::Pipeline, reader::MetricReader, InstrumentKind,
 };
-use opentelemetry::metrics::Result;
+use crate::metrics::{MetricResult, Temporality};
 
-#[derive(Debug)]
-pub struct TestMetricReader {}
+#[derive(Debug, Clone)]
+pub struct TestMetricReader {
+    is_shutdown: Arc<Mutex<bool>>,
+}
+
+impl TestMetricReader {
+    // Constructor to initialize the TestMetricReader
+    pub fn new() -> Self {
+        TestMetricReader {
+            is_shutdown: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    // Method to check if the reader is shutdown
+    pub fn is_shutdown(&self) -> bool {
+        *self.is_shutdown.lock().unwrap()
+    }
+}
+
+impl Default for TestMetricReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MetricReader for TestMetricReader {
     fn register_pipeline(&self, _pipeline: Weak<Pipeline>) {}
 
-    fn collect(&self, _rm: &mut ResourceMetrics) -> Result<()> {
+    fn collect(&self, _rm: &mut ResourceMetrics) -> MetricResult<()> {
         Ok(())
     }
 
-    fn force_flush(&self) -> Result<()> {
+    fn force_flush(&self) -> OTelSdkResult {
         Ok(())
     }
 
-    fn shutdown(&self) -> Result<()> {
-        self.force_flush()
+    fn shutdown(&self) -> OTelSdkResult {
+        let result = self.force_flush();
+        {
+            let mut is_shutdown = self.is_shutdown.lock().unwrap();
+            *is_shutdown = true;
+        }
+        result.map_err(|e| OTelSdkError::InternalFailure(e.to_string()))
     }
-}
 
-impl AggregationSelector for TestMetricReader {
-    fn aggregation(&self, _kind: InstrumentKind) -> Aggregation {
-        Aggregation::Drop
-    }
-}
-
-impl TemporalitySelector for TestMetricReader {
     fn temporality(&self, _kind: InstrumentKind) -> Temporality {
-        Temporality::Cumulative
+        Temporality::default()
     }
 }

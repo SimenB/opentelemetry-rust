@@ -18,7 +18,7 @@ const TONIC_INCLUDES: &[&str] = &["src/proto/opentelemetry-proto", "src/proto"];
 
 #[test]
 fn build_tonic() {
-    let before_build = build_content_map(TONIC_OUT_DIR);
+    let before_build = build_content_map(TONIC_OUT_DIR, true);
 
     let out_dir = TempDir::new().expect("failed to create temp dir to store the generated files");
 
@@ -41,8 +41,8 @@ fn build_tonic() {
             "#[cfg_attr(feature = \"with-serde\", serde(rename_all = \"camelCase\"))]",
         );
 
-    // optional numeric and String field need to default it to 0 otherwise JSON files without those field
-    // cannot deserialize
+    // Optional numeric, string and array fields need to default to their default value otherwise
+    // JSON files without those field cannot deserialize
     // we cannot add serde(default) to all generated types because enums cannot be annotated with serde(default)
     for path in [
         "trace.v1.Span",
@@ -53,6 +53,19 @@ fn build_tonic() {
         "resource.v1.Resource",
         "trace.v1.Span.Event",
         "trace.v1.Status",
+        "logs.v1.LogRecord",
+        "logs.v1.ScopeLogs",
+        "logs.v1.ResourceLogs",
+        "metrics.v1.Metric",
+        "metrics.v1.ResourceMetrics",
+        "metrics.v1.ScopeMetrics",
+        "metrics.v1.Gauge",
+        "metrics.v1.Sum",
+        "metrics.v1.Histogram",
+        "metrics.v1.ExponentialHistogram",
+        "metrics.v1.Summary",
+        "metrics.v1.NumberDataPoint",
+        "metrics.v1.HistogramDataPoint",
     ] {
         builder = builder.type_attribute(
             path,
@@ -68,25 +81,57 @@ fn build_tonic() {
         "trace.v1.Span.trace_id",
         "trace.v1.Span.span_id",
         "trace.v1.Span.parent_span_id",
+        "trace.v1.Span.Link.trace_id",
+        "trace.v1.Span.Link.span_id",
+        "logs.v1.LogRecord.span_id",
+        "logs.v1.LogRecord.trace_id",
+        "metrics.v1.Exemplar.span_id",
+        "metrics.v1.Exemplar.trace_id",
     ] {
         builder = builder
             .field_attribute(path, "#[cfg_attr(feature = \"with-serde\", serde(serialize_with = \"crate::proto::serializers::serialize_to_hex_string\", deserialize_with = \"crate::proto::serializers::deserialize_from_hex_string\"))]")
     }
 
-    // add custom serializer and deserializer for AnyValue
+    // special serializer and deserializer for timestamp
+    // OTLP/JSON format may uses string for timestamp
+    // the proto file uses u64 for timestamp
+    // Thus, special serializer and deserializer are needed
+    for path in [
+        "trace.v1.Span.start_time_unix_nano",
+        "trace.v1.Span.end_time_unix_nano",
+        "trace.v1.Span.Event.time_unix_nano",
+        "logs.v1.LogRecord.time_unix_nano",
+        "logs.v1.LogRecord.observed_time_unix_nano",
+        "metrics.v1.HistogramDataPoint.start_time_unix_nano",
+        "metrics.v1.HistogramDataPoint.time_unix_nano",
+        "metrics.v1.NumberDataPoint.start_time_unix_nano",
+        "metrics.v1.NumberDataPoint.time_unix_nano",
+    ] {
+        builder = builder
+            .field_attribute(path, "#[cfg_attr(feature = \"with-serde\", serde(serialize_with = \"crate::proto::serializers::serialize_u64_to_string\", deserialize_with = \"crate::proto::serializers::deserialize_string_to_u64\"))]")
+    }
+
+    // special serializer and deserializer for value
+    // The Value::value field must be hidden
     builder = builder
-        .field_attribute("common.v1.KeyValue.value", "#[cfg_attr(feature =\"with-serde\", serde(serialize_with = \"crate::proto::serializers::serialize_to_value\", deserialize_with = \"crate::proto::serializers::deserialize_from_value\"))]");
+        .field_attribute("common.v1.AnyValue.value", "#[cfg_attr(feature =\"with-serde\", serde(flatten, serialize_with = \"crate::proto::serializers::serialize_to_value\", deserialize_with = \"crate::proto::serializers::deserialize_from_value\"))]");
+
+    // flatten
+    for path in ["metrics.v1.Metric.data", "metrics.v1.NumberDataPoint.value"] {
+        builder =
+            builder.field_attribute(path, "#[cfg_attr(feature =\"with-serde\", serde(flatten))]");
+    }
 
     builder
         .out_dir(out_dir.path())
-        .compile(TONIC_PROTO_FILES, TONIC_INCLUDES)
+        .compile_protos(TONIC_PROTO_FILES, TONIC_INCLUDES)
         .expect("cannot compile protobuf using tonic");
 
-    let after_build = build_content_map(out_dir.path());
+    let after_build = build_content_map(out_dir.path(), true);
     ensure_files_are_same(before_build, after_build, TONIC_OUT_DIR);
 }
 
-fn build_content_map(path: impl AsRef<Path>) -> HashMap<String, String> {
+fn build_content_map(path: impl AsRef<Path>, normalize_line_feed: bool) -> HashMap<String, String> {
     std::fs::read_dir(path)
         .expect("cannot open dictionary of generated files")
         .flatten()
@@ -95,12 +140,25 @@ fn build_content_map(path: impl AsRef<Path>) -> HashMap<String, String> {
             let file_name = path
                 .file_name()
                 .expect("file name should always exist for generated files");
-            (
-                file_name.to_string_lossy().to_string(),
-                std::fs::read_to_string(path).expect("cannot read from existing generated file"),
-            )
+
+            let mut file_contents = std::fs::read_to_string(path.clone())
+                .expect("cannot read from existing generated file");
+
+            if normalize_line_feed {
+                file_contents = get_platform_specific_string(file_contents);
+            }
+
+            (file_name.to_string_lossy().to_string(), file_contents)
         })
         .collect()
+}
+
+///  Returns a String which uses the platform specific new line feed character.
+fn get_platform_specific_string(input: String) -> String {
+    if cfg!(windows) && !input.ends_with("\r\n") && input.ends_with('\n') {
+        return input.replace('\n', "\r\n");
+    }
+    input
 }
 
 fn ensure_files_are_same(

@@ -2,11 +2,11 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use futures_util::future::BoxFuture;
 use opentelemetry::{
     trace::{Span, Tracer, TracerProvider},
-    Key,
+    KeyValue,
 };
 use opentelemetry_sdk::{
-    export::trace::{ExportResult, SpanData, SpanExporter},
-    trace as sdktrace,
+    error::OTelSdkResult,
+    trace::{self as sdktrace, SpanData, SpanExporter},
 };
 #[cfg(not(target_os = "windows"))]
 use pprof::criterion::{Output, PProfProfiler};
@@ -16,42 +16,42 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     trace_benchmark_group(c, "start-end-span-4-attrs", |tracer| {
         let mut span = tracer.start("foo");
-        span.set_attribute(Key::new("key1").bool(false));
-        span.set_attribute(Key::new("key2").string("hello"));
-        span.set_attribute(Key::new("key4").f64(123.456));
+        span.set_attribute(KeyValue::new("key1", false));
+        span.set_attribute(KeyValue::new("key2", "hello"));
+        span.set_attribute(KeyValue::new("key4", 123.456));
         span.end();
     });
 
     trace_benchmark_group(c, "start-end-span-8-attrs", |tracer| {
         let mut span = tracer.start("foo");
-        span.set_attribute(Key::new("key1").bool(false));
-        span.set_attribute(Key::new("key2").string("hello"));
-        span.set_attribute(Key::new("key4").f64(123.456));
-        span.set_attribute(Key::new("key11").bool(false));
-        span.set_attribute(Key::new("key12").string("hello"));
-        span.set_attribute(Key::new("key14").f64(123.456));
+        span.set_attribute(KeyValue::new("key1", false));
+        span.set_attribute(KeyValue::new("key2", "hello"));
+        span.set_attribute(KeyValue::new("key4", 123.456));
+        span.set_attribute(KeyValue::new("key11", false));
+        span.set_attribute(KeyValue::new("key12", "hello"));
+        span.set_attribute(KeyValue::new("key14", 123.456));
         span.end();
     });
 
     trace_benchmark_group(c, "start-end-span-all-attr-types", |tracer| {
         let mut span = tracer.start("foo");
-        span.set_attribute(Key::new("key1").bool(false));
-        span.set_attribute(Key::new("key2").string("hello"));
-        span.set_attribute(Key::new("key3").i64(123));
-        span.set_attribute(Key::new("key5").f64(123.456));
+        span.set_attribute(KeyValue::new("key1", false));
+        span.set_attribute(KeyValue::new("key2", "hello"));
+        span.set_attribute(KeyValue::new("key3", 123));
+        span.set_attribute(KeyValue::new("key5", 123.456));
         span.end();
     });
 
     trace_benchmark_group(c, "start-end-span-all-attr-types-2x", |tracer| {
         let mut span = tracer.start("foo");
-        span.set_attribute(Key::new("key1").bool(false));
-        span.set_attribute(Key::new("key2").string("hello"));
-        span.set_attribute(Key::new("key3").i64(123));
-        span.set_attribute(Key::new("key5").f64(123.456));
-        span.set_attribute(Key::new("key11").bool(false));
-        span.set_attribute(Key::new("key12").string("hello"));
-        span.set_attribute(Key::new("key13").i64(123));
-        span.set_attribute(Key::new("key15").f64(123.456));
+        span.set_attribute(KeyValue::new("key1", false));
+        span.set_attribute(KeyValue::new("key2", "hello"));
+        span.set_attribute(KeyValue::new("key3", 123));
+        span.set_attribute(KeyValue::new("key5", 123.456));
+        span.set_attribute(KeyValue::new("key11", false));
+        span.set_attribute(KeyValue::new("key12", "hello"));
+        span.set_attribute(KeyValue::new("key13", 123));
+        span.set_attribute(KeyValue::new("key15", 123.456));
         span.end();
     });
 }
@@ -60,17 +60,17 @@ fn criterion_benchmark(c: &mut Criterion) {
 struct VoidExporter;
 
 impl SpanExporter for VoidExporter {
-    fn export(&mut self, _spans: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
+    fn export(&mut self, _spans: Vec<SpanData>) -> BoxFuture<'static, OTelSdkResult> {
         Box::pin(futures_util::future::ready(Ok(())))
     }
 }
 
-fn trace_benchmark_group<F: Fn(&sdktrace::Tracer)>(c: &mut Criterion, name: &str, f: F) {
+fn trace_benchmark_group<F: Fn(&sdktrace::SdkTracer)>(c: &mut Criterion, name: &str, f: F) {
     let mut group = c.benchmark_group(name);
 
     group.bench_function("always-sample", |b| {
-        let provider = sdktrace::TracerProvider::builder()
-            .with_config(sdktrace::config().with_sampler(sdktrace::Sampler::AlwaysOn))
+        let provider = sdktrace::SdkTracerProvider::builder()
+            .with_sampler(sdktrace::Sampler::AlwaysOn)
             .with_simple_exporter(VoidExporter)
             .build();
         let always_sample = provider.tracer("always-sample");
@@ -79,8 +79,8 @@ fn trace_benchmark_group<F: Fn(&sdktrace::Tracer)>(c: &mut Criterion, name: &str
     });
 
     group.bench_function("never-sample", |b| {
-        let provider = sdktrace::TracerProvider::builder()
-            .with_config(sdktrace::config().with_sampler(sdktrace::Sampler::AlwaysOff))
+        let provider = sdktrace::SdkTracerProvider::builder()
+            .with_sampler(sdktrace::Sampler::AlwaysOff)
             .with_simple_exporter(VoidExporter)
             .build();
         let never_sample = provider.tracer("never-sample");
